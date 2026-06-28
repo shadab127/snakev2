@@ -1,49 +1,10 @@
-# Roadmap: snakeV2 Enhancements
+# Roadmap
 
 ## Overview
 
-This roadmap covers the next major features for snakeV2 — transforming it from a fixed-isometric
+This roadmap covers the next major features for the project — transforming it from a fixed-isometric
 monolithic snake game into a modular, dynamic 3D follow-cam experience with a scrolling toroidal
 world, progressive difficulty, and a mini-map.
-
----
-
-## Phase 1 — Modular Refactor
-
-**Objective:** Split the monolithic `snakeV2.py` (~2440 lines) into a clean directory structure
-with single-responsibility modules. This reduces per-session context load and makes future phases
-easier to implement.
-
-**Proposed layout:**
-
-```
-snakeV2/
-├── main.py                # Entry point + SnakeGame (orchestration, game loop)
-├── config.py              # All constants (WIDTH, HEX_SIZE, colors, FPS, etc.)
-├── shaders.py             # GLSL source strings
-├── game_state.py          # GameState enum
-├── utils.py               # perlin_noise, hex math, color math, project()
-├── camera.py              # 3D view/projection matrix
-├── grid.py                # Hex grid: tiles, noise, AO, wrapping
-├── snake.py               # Snake state: movement, direction, collision, growth
-├── apple.py               # Apple spawning logic
-├── particle.py            # Particle + ParticlePool classes
-├── resources.py           # ResourceManager (fonts, sprites, caches)
-├── renderer.py            # Renderer interface / base
-├── gl_renderer.py         # GLRenderer (ModernGL pipeline)
-├── renderer_soft.py       # Software renderer fallback
-├── ui.py                  # All overlays: start, pause, game-over, score, minimap
-├── README.md              # File-by-file documentation
-```
-
-**Key principles:**
-- `snake.py`, `grid.py`, `apple.py` — pure game logic, no rendering imports.
-- `renderer.py` + subclasses — no game logic, receive data to draw.
-- `config.py` — single source of truth for all tunable values.
-- `main.py` — thin orchestration, wires modules together.
-
-**Effort:** Medium-Hard (~2-3 hours of careful extraction, zero behavior change).
-**Dependencies:** None — should be done first to reduce context for all subsequent phases.
 
 ---
 
@@ -58,7 +19,7 @@ snakeV2/
 
 **Files touched:** `snake.py` or `main.py` — `__init__`, `reset`, `update`.
 **Effort:** Easy (~5 lines).
-**Dependencies:** Phase 1 (modules exist).
+**Dependencies:** None.
 
 ---
 
@@ -111,17 +72,11 @@ that follows the snake head.
 **Files touched:** `camera.py`, `utils.py`, `renderer.py`, `gl_renderer.py`, `renderer_soft.py`,
 `grid.py`, `ui.py`, `main.py` — ~30–40 call sites.
 **Effort:** Very Hard — core architectural change.
-**Dependencies:** Phase 1 (modules).
+**Dependencies:** None.
 
 ---
 
 ## Risks
-
-### Phase 1 (Modular Refactor)
-- **Regression:** Import cycles between modules (e.g., `renderer.py` needs `grid.py`, `grid.py`
-  needs `config.py`).
-- **Mitigation:** Keep the dependency graph acyclic; `config.py` is a leaf module, `main.py`
-  is the root. Use forward references or late imports where unavoidable.
 
 ### Phase 2 (Progressive Speed)
 - **Regression:** Speed curve may feel unbalanced.
@@ -132,8 +87,8 @@ that follows the snake head.
 - **Mitigation:** Place mini-map below or beside the score panel, or give it its own corner.
 
 ### Phase 4a (Wrapping)
-- **Regression:** Hex wrapping via offset coordinates may drift visually on non-rectangular hex grids.
-- **Mitigation:** Test thoroughly at all 6 edges. Validate visual continuity of tile positions.
+- **Regression:** Hex wrapping via offset coordinates may drift visually on non-rectangular hex grids. The hexagonal play area (`max(|q|,|r|,|q+r|) <= GRID_RADIUS`) means offset-coordinate modulo wraps corner cells outside valid hex bounds.
+- **Mitigation:** Use rectangular wrapping (treat grid as ~15×15 parallelogram in offset coords) — simpler and visually effective. Clamp post-wrap coordinates to valid range if needed. Test thoroughly at all 6 edges.
 
 ### Phase 4b (3D Camera)
 - **Regression:** Every rendering function changes; any missed `project()` call causes visual glitches.
