@@ -31,15 +31,15 @@ class Matrix4:
 
     @staticmethod
     def look_at(eye, target, up):
-        f = (eye[0]-target[0], eye[1]-target[1], eye[2]-target[2])
+        f = (target[0]-eye[0], target[1]-eye[1], target[2]-eye[2])
         fl = math.hypot(*f)
         if fl < 1e-10:
             return Matrix4.identity()
         f = (f[0]/fl, f[1]/fl, f[2]/fl)
 
-        s = (up[1]*f[2] - up[2]*f[1],
-             up[2]*f[0] - up[0]*f[2],
-             up[0]*f[1] - up[1]*f[0])
+        s = (f[1]*up[2] - f[2]*up[1],
+             f[2]*up[0] - f[0]*up[2],
+             f[0]*up[1] - f[1]*up[0])
         sl = math.hypot(*s)
         if sl < 1e-10:
             return Matrix4.identity()
@@ -50,12 +50,12 @@ class Matrix4:
              s[0]*f[1] - s[1]*f[0])
 
         return [
-            s[0], u[0], f[0], 0,
-            s[1], u[1], f[1], 0,
-            s[2], u[2], f[2], 0,
+            s[0], u[0], -f[0], 0,
+            s[1], u[1], -f[1], 0,
+            s[2], u[2], -f[2], 0,
             -s[0]*eye[0]-s[1]*eye[1]-s[2]*eye[2],
             -u[0]*eye[0]-u[1]*eye[1]-u[2]*eye[2],
-            -f[0]*eye[0]-f[1]*eye[1]-f[2]*eye[2],
+            f[0]*eye[0]+f[1]*eye[1]+f[2]*eye[2],
             1
         ]
 

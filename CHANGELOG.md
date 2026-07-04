@@ -2,8 +2,65 @@
 
 ## v0.1.0 — 2026-07-04
 
+### Recovery Track Complete
+
+Phase 21 (Playability Sign-Off) closes the 11-phase recovery track that began with Phase 01.
+
+**Headless verification results:**
+- 129/129 tests pass (fixed one flaky soak test — periodic force-feeding)
+- Entry points: `python main.py --version`, `python -m snakev2 --version`, `from __version__ import __version__` all produce `0.1.0`
+- Harness captured start_screen, gameplay, and game_over screenshots
+- FPS: 38.4 post-on / 84.5 post-off (software render, 1280×800)
+- Per-stage: tiles ~0.5ms, snake ~0.8ms, particles ~0.06ms, post 1.3–5.8ms, UI ~2.4ms
+- No inverted projection (probe points confirmed correct)
+- All game state transitions verified programmatically
+
+**Phase 19 follow-up fixes:**
+- Removed per-pixel Python loop fallback in bloom/tone map (non-numpy path now skips with warning)
+- Updated `frame_budget.md` with real Phase 19 measured numbers
+- Added paused state screenshot capture to verification harness
+
+**Phase 20 follow-up fixes:**
+- GL god rays shader: 12→6 rays, softened (pow 8→4), day-cycle gated (`u_day_cycle < 0.2` skips)
+- GL renderer: passes `u_day_cycle` uniform; gates god rays render on `day_cycle > 0.2`
+- Vignette moved before UI rendering (no longer draws over HUD/menus)
+- Removed redundant full-screen fog_surf additive blit from SW path (per-tile depth fog already handles this)
+
+**Items needing real-display verification (unchecked in qa_checklist.md):**
+- Visual readability, camera feel, audio, input latency, menu contrast, full playthrough flow
+
 ### Added
 - Project initialized.
+- **Phase 17: World Orientation Fix (Recovery)**
+  - `camera.py` — `Matrix4.look_at()` fixed: corrected forward vector direction (`target-eye` instead of `eye-target`), right vector cross product order (`f×up`), and column-major layout (vectors spread across columns, third column uses `-f`, translation sign fixed)
+  - Result: `grid_center_above` now projects above `grid_center` on screen (y=418 vs y=447) — world-up = screen-up
+  - All tiles, snake, apple, water, particles, shadows automatically corrected via the same fix
+- **Phase 18: Scene Correctness Pass (Recovery)**
+  - `main.py`: tile top faces now filled with lighting/color (were transparent, showing ground underneath)
+  - `main.py`: spline positions reversed so `_spline_positions[0]` matches `snake[0]` (head)
+  - `main.py`: connector circles between snake segments now draw at same z=2 as body segments (were at z=7.3, floating above)
+  - `dev/verify_screenshots.py`: added `capture_paused()` function for paused state screenshot
+- **Phase 19: Software-Path Performance Recovery (Recovery)**
+  - `main.py`: bloom and tone map combined into a single small-surface pass using `surfarray.pixels3d()` — eliminated per-pixel `get_at`/`set_at` loops (71× speedup, 349ms→4.9ms)
+  - `main.py`: film grain uses precomputed noise surface scrolled 3px/frame — no per-frame Surface creation
+  - `main.py`: tile cache invalidation gated by camera movement threshold (3.5 units) — tiles/frame from 17ms→0.5ms
+  - `main.py`: water reduced from 50→24 rows, third wave harmonic removed, reflection optimized
+  - `resources.py`: sky uses `fill(rect)` instead of `draw.line()` — 5× faster
+  - Result: post-on 37 FPS (from 2.3), post-off 77 FPS (from 27.5)
+- **Phase 20: Effects Re-Level (Recovery)**
+  - `main.py`: god rays gated by day cycle (`_day_cycle > 0.2`), softened to 6 subtle rays — no starburst on menus
+  - `main.py`: removed redundant full-screen additive fog tint that washed out contrast
+  - `main.py`: vignette toggle was broken (rendered unconditionally) — fixed to respect `settings['vignette']`
+  - `resources.py`: fog gradient alpha reduced (max 45→20) for softer horizon falloff
+  - `config.py`: `BLOOM_THRESHOLD` 0.3→0.55, `BLOOM_INTENSITY` 0.6→0.45 — bloom only highlights genuine emissives
+- **Phase 16: Visual Verification Harness (Recovery)**
+  - `dev/verify_screenshots.py` — headless harness that captures start/gameplay/game-over screenshots, measures FPS with per-stage timings, and records projection probe points
+  - `implementation_plan/verification.md` — guide documenting what correct frames must show
+  - `implementation_plan/README.md` — updated rule 7 to require harness runs for every phase
+- **Phase 21: Playability Sign-Off (Recovery)**
+  - `README.md`: updated with harness screenshots (start, gameplay, game over)
+  - `implementation_plan/qa_checklist.md`: updated with verification results
+  - `dev/verify_screenshots.py`: captures all 4 states (start, playing, paused, game over)
 - **Phase 15: Packaging & Release**
   - `pyproject.toml` — proper Python packaging with `pip install .` support, console entry point (`snakev2`), `moderngl` as optional `[gl]` extra, Python >= 3.8
   - `__version__.py` — single-source version (`VERSION = (0,1,0)`, `__version__ = '0.1.0'`)

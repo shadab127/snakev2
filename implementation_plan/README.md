@@ -32,8 +32,10 @@ notes say otherwise.
 5. Update `CHANGELOG.md` with a short entry when the phase is done.
 6. Verify by running `python main.py` and playing; check every acceptance criterion.
 7. **Visual proof required:** after phase 16 exists, every phase must run the
-   verification harness, capture screenshots and the FPS report, and actually
-   inspect them before being declared done. Logic tests passing is not "done".
+   verification harness (`python dev/verify_screenshots.py`), capture screenshots
+   and the FPS report, and actually inspect them before being declared done. See
+   `implementation_plan/verification.md` for what correct frames must show.
+   Logic tests passing is not "done".
 8. Stay inside the phase's scope. Do not start the next phase.
 
 ## Phase index

@@ -6,7 +6,11 @@ Navigate a glowing snake across a procedurally generated hexagonal island, eat a
 
 ## Screenshots
 
-*(screenshots coming soon)*
+| Start Screen | Gameplay | Game Over |
+|---|---|---|
+| ![Start Screen](dev/screenshots/start_screen.png) | ![Gameplay](dev/screenshots/gameplay.png) | ![Game Over](dev/screenshots/game_over.png) |
+
+Screenshots captured via the headless verification harness (`python dev/verify_screenshots.py`).
 
 ## Features
 

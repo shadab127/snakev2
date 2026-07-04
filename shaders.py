@@ -229,21 +229,23 @@ out vec4 f_color;
 uniform vec2 u_sun_pos;
 uniform float u_time;
 uniform vec3 u_sun_color;
+uniform float u_day_cycle;
 void main() {
+    if (u_day_cycle < 0.2) { f_color = vec4(0.0); return; }
     vec2 dir = v_uv - u_sun_pos;
     float dist = length(dir);
     if (dist < 0.001) { f_color = vec4(0.0); return; }
     dir = normalize(dir);
     float rays = 0.0;
-    for (int i = 0; i < 12; i++) {
-        float ang = 0.5236 * float(i) + sin(u_time * 0.15 + float(i)) * 0.12;
-        vec2 rd = vec2(cos(ang + u_time * 0.5), sin(ang + u_time * 0.5));
+    for (int i = 0; i < 6; i++) {
+        float ang = 1.0472 * float(i) + 0.5236 + sin(u_time * 0.15 + float(i)) * 0.14;
+        vec2 rd = vec2(cos(ang + u_time * 0.3), sin(ang + u_time * 0.3));
         float d = abs(dot(dir, rd));
-        rays += pow(d, 8.0) * max(0.0, 1.0 - dist * 0.5);
+        rays += pow(d, 4.0) * max(0.0, 1.0 - dist * 0.6);
     }
-    rays *= max(0.0, 1.0 - dist * 0.8);
+    rays *= max(0.0, 1.0 - dist);
     vec3 ray_color = u_sun_color / 255.0;
-    f_color = vec4(ray_color * rays * 0.35, rays * 0.3);
+    f_color = vec4(ray_color * rays * 0.25, rays * 0.2);
 }
 '''
 

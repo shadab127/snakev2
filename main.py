@@ -5,6 +5,10 @@ import sys
 import time
 import struct
 from collections import deque
+try:
+    import numpy as np
+except ImportError:
+    np = None
 from config import *
 from game_state import GameState
 from utils import (perlin_noise, catmull_rom, hex_side_normal, hex_to_pixel,
@@ -105,6 +109,38 @@ class SnakeGame:
         self.draw_cache = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
         self.cloud_surf_cache = pygame.Surface((WIDTH, HEIGHT // 2), pygame.SRCALPHA)
+
+        self._film_grain_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self._film_grain_surf.fill((255, 255, 255, 0))
+        if np is not None:
+            try:
+                garr = pygame.surfarray.pixels_alpha(self._film_grain_surf)
+                garr[:, :] = np.random.randint(
+                    0, int(255 * FILM_GRAIN_STRENGTH) + 1,
+                    size=(HEIGHT, WIDTH), dtype=np.uint8
+                )
+                del garr
+            except (pygame.error, ValueError):
+                pass
+        if np is None:
+            for _ in range(2000):
+                gx = random.randint(0, WIDTH - 1)
+                gy = random.randint(0, HEIGHT - 1)
+                ga = random.randint(0, int(255 * FILM_GRAIN_STRENGTH))
+                if ga > 0:
+                    self._film_grain_surf.set_at((gx, gy), (255, 255, 255, ga))
+        self._grain_offset = 0
+        self._warned_no_numpy = False
+
+        self._fog_tint_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self._fog_tint_surf.fill((*FOG_COLOR, int(40 * FOG_DENSITY * 3)))
+
+        self._last_camera_px = 0.0
+        self._last_camera_py = 0.0
+        self._last_tile_camera_px = 0.0
+        self._last_tile_camera_py = 0.0
+        self._camera_moved_threshold = 3.5
+        self._ground_cache_valid = False
 
         self.grade_warm_flash = 0.0
         self.grade_cool_shift = 0.0
@@ -225,6 +261,14 @@ class SnakeGame:
         return rects
 
     def _build_ground(self):
+        if self._ground_cache_valid:
+            cx, cy = self.camera.eye[0], self.camera.eye[1]
+            dx = cx - self._last_camera_px
+            dy = cy - self._last_camera_py
+            moved = math.hypot(dx, dy) >= self._camera_moved_threshold
+            if not moved:
+                return
+        self._last_camera_px, self._last_camera_py = self.camera.eye[0], self.camera.eye[1]
         self.ground_cache.fill((0, 0, 0, 0))
         ground_cache = self._ground_static_cache
         for q, r in self._all_hexes_cache:
@@ -234,6 +278,7 @@ class SnakeGame:
                 sx_b, sy_b, _ = self.camera.project(c_x, c_y, c_z)
                 bot_pts.append((sx_b, sy_b))
             pygame.draw.polygon(self.ground_cache, gs['color'], bot_pts)
+        self._ground_cache_valid = True
 
     def _build_tile_cache(self):
         if self._tile_cache_valid and not self._full_redraw_requested:
@@ -272,14 +317,23 @@ class SnakeGame:
             self._full_redraw_requested = False
             return
 
+        if self._tile_cache_valid:
+            cx, cy = self.camera.eye[0], self.camera.eye[1]
+            dx = cx - self._last_tile_camera_px
+            dy = cy - self._last_tile_camera_py
+            camera_moved = math.hypot(dx, dy) >= self._camera_moved_threshold
+            if not camera_moved:
+                return
+
+        self._last_tile_camera_px, self._last_tile_camera_py = self.camera.eye[0], self.camera.eye[1]
         self._tile_cache.fill((0, 0, 0, 0))
         time_float = self.render_time
         tile_cache = self._tile_static_cache
         all_hex = self._all_hexes_cache
         tile_items = []
         for q, r in all_hex:
-            cx, cy = tile_cache[(q, r)]['center_world']
-            sx, sy, depth = self.camera.project(cx, cy, 0)
+            cx_t, cy_t = tile_cache[(q, r)]['center_world']
+            sx, sy, depth = self.camera.project(cx_t, cy_t, 0)
             if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
                 continue
             if sy < -TILE_CLIP_MARGIN or sy > HEIGHT + TILE_CLIP_MARGIN:
@@ -289,7 +343,6 @@ class SnakeGame:
         for _, q, r in tile_items:
             self.draw_tile(self._tile_cache, q, r, time_float)
         self._tile_cache_valid = True
-        self._full_redraw_requested = False
 
     def _draw_tile_decorations(self, surf, q, r, time_float):
         static = self._tile_static_cache[(q, r)]
@@ -553,7 +606,6 @@ class SnakeGame:
         else:
             self.snake.pop()
 
-        self._tile_cache_valid = False
         self._request_full_redraw()
         return True
 
@@ -1014,6 +1066,8 @@ class SnakeGame:
 
         pygame.draw.polygon(surf, edge_color, top_pts, max(1, int(1 + sun_factor * 0.5)))
 
+        pygame.draw.polygon(surf, final_tri_color, top_pts)
+
         for i in range(6):
             j = (i + 1) % 6
             quad = [top_pts[i], top_pts[j], bot_pts[j], bot_pts[i]]
@@ -1158,7 +1212,7 @@ class SnakeGame:
             for frac in [0.25, 0.5, 0.75]:
                 p_cx = cx + (npx - cx) * frac
                 p_cy = cy + (npy - cy) * frac
-                z = 1 + TILE_HEIGHT * 0.35
+                z = 2
                 sx_j, sy_j, _ = self.camera.project(p_cx, p_cy, z)
                 r_conn = max(1.5, sz * 0.35 * (1 - idx * 0.008))
                 base_color = HEAD_COLOR if idx == 0 else SNAKE_COLORS[color_idx]
@@ -1354,6 +1408,7 @@ class SnakeGame:
             self._spline_positions = None
             if len(self.path_history) >= 2:
                 self._spline_positions = sample_spline_path(list(self.path_history), len(self.snake))
+                self._spline_positions.reverse()
             self.camera.follow_snake(*self.snake[0], self.direction, 1.0 / max(RENDER_FPS, 1), self._speed_ratio)
         surf = self.screen
         time_float = self.render_time
@@ -1389,8 +1444,8 @@ class SnakeGame:
         water_highlight = lerp_color(sun_color, (50, 130, 200), 0.5)
 
         self.water_surf.fill((0, 0, 0, 0))
-        for wi in range(-25, 25):
-            wy = wi * 16
+        for wi in range(-12, 12):
+            wy = wi * 28
             z_w = -TILE_HEIGHT - 20
             w2 = 1000
             t = (wi + 25) / 50
@@ -1402,10 +1457,8 @@ class SnakeGame:
             sx1, sy1, _ = self.camera.project(-w2, wy, z_w)
             sx2, sy2, _ = self.camera.project(w2, wy, z_w)
 
-            wave = math.sin(wy * 0.04 + time_float * WATER_WAVE_SPEED) * WATER_WAVE_AMP
-            wave2 = math.sin(wy * 0.07 + time_float * WATER_WAVE_SPEED * 1.5 + 1) * WATER_WAVE_AMP * 0.6
-            wave3 = math.sin(wy * 0.02 + time_float * WATER_WAVE_SPEED * 0.5 + 2.5) * WATER_WAVE_AMP * 0.3
-            combined_wave = wave + wave2 + wave3
+            combined_wave = (math.sin(wy * 0.04 + time_float * WATER_WAVE_SPEED) * WATER_WAVE_AMP
+                    + math.sin(wy * 0.07 + time_float * WATER_WAVE_SPEED * 1.5 + 1) * WATER_WAVE_AMP * 0.6)
 
             c = lerp_color(water_color_base, WATER_COLOR_2, t)
             fresnel = 0.3 + 0.7 * (1.0 - abs(t - 0.5) * 2) ** 2
@@ -1425,9 +1478,10 @@ class SnakeGame:
         sun_ref_y_start = HEIGHT * 0.5
         sun_ref_h = HEIGHT * 0.2
         self._water_reflect_surf.fill((0, 0, 0, 0))
-        for ry in range(int(sun_ref_h)):
+        for ry in range(0, int(sun_ref_h), 2):
             alpha = int(40 * (1 - ry / sun_ref_h) * (0.5 + 0.5 * math.sin(time_float * 2 + ry * 0.1)))
-            pygame.draw.line(self._water_reflect_surf, (*sun_color, alpha), (0, ry), (100, ry), 2)
+            if alpha > 0:
+                self._water_reflect_surf.fill((*sun_color, alpha), rect=(0, ry, 100, 2))
         surf.blit(self._water_reflect_surf, (sun_ref_x - 50, sun_ref_y_start), special_flags=pygame.BLEND_ADD)
 
         if not hasattr(self, '_reflect_cache'):
@@ -1488,56 +1542,57 @@ class SnakeGame:
             god_rays_enabled = self.settings.get('god_rays', POST_GOD_RAYS_ENABLED)
             film_grain_enabled = self.settings.get('film_grain', POST_FILM_GRAIN_ENABLED)
 
-            if bloom_enabled:
-                bright_surf = surf.copy()
-                for by in range(0, HEIGHT, 2):
-                    for bx in range(0, WIDTH, 2):
-                        c = bright_surf.get_at((bx, by))
-                        luma = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
-                        if luma < 255 * BLOOM_THRESHOLD:
-                            bright_surf.set_at((bx, by), (0, 0, 0, 0))
-                bloom_small = pygame.transform.smoothscale(bright_surf, (WIDTH // 4, HEIGHT // 4))
-                bloom_blur = pygame.transform.smoothscale(bloom_small, (WIDTH, HEIGHT))
-                bloom_blur.set_alpha(int(28 * BLOOM_INTENSITY * 2))
-                surf.blit(bloom_blur, (0, 0), special_flags=pygame.BLEND_ADD)
+            if bloom_enabled or tone_map_enabled:
+                if np is not None:
+                    try:
+                        bloom_small = pygame.transform.smoothscale(surf, (WIDTH // 4, HEIGHT // 4))
+                        barr = pygame.surfarray.pixels3d(bloom_small)
+                        if bloom_enabled:
+                            luma = 0.299 * barr[:,:,0] + 0.587 * barr[:,:,1] + 0.114 * barr[:,:,2]
+                            thresh_f = 255.0 * BLOOM_THRESHOLD
+                            dark = luma < thresh_f
+                            barr[:,:,0][dark] = 0
+                            barr[:,:,1][dark] = 0
+                            barr[:,:,2][dark] = 0
+                        if tone_map_enabled:
+                            r_ch = barr[:,:,0].astype(np.uint16)
+                            g_ch = barr[:,:,1].astype(np.uint16)
+                            b_ch = barr[:,:,2].astype(np.uint16)
+                            barr[:,:,0] = ((r_ch * 255) // (r_ch + 255)).astype(np.uint8)
+                            barr[:,:,1] = ((g_ch * 255) // (g_ch + 255)).astype(np.uint8)
+                            barr[:,:,2] = ((b_ch * 255) // (b_ch + 255)).astype(np.uint8)
+                        del barr
+                        blur = pygame.transform.smoothscale(bloom_small, (WIDTH, HEIGHT))
+                        if bloom_enabled:
+                            blur.set_alpha(int(28 * BLOOM_INTENSITY * 2))
+                            surf.blit(blur, (0, 0), special_flags=pygame.BLEND_ADD)
+                    except (pygame.error, ValueError):
+                        pass
+                else:
+                    if bloom_enabled or tone_map_enabled:
+                        if not hasattr(self, '_warned_no_numpy'):
+                            self._warned_no_numpy = True
+                            print("WARNING: numpy not available — skipping bloom/tone map (install numpy for post-FX)")
+                
 
-            if tone_map_enabled:
-                for ty in range(0, HEIGHT, 2):
-                    for tx in range(0, WIDTH, 2):
-                        c = surf.get_at((tx, ty))
-                        r = c[0] / 255.0; g = c[1] / 255.0; b = c[2] / 255.0
-                        r = r / (r + 1.0); g = g / (g + 1.0); b = b / (b + 1.0)
-                        surf.set_at((tx, ty), (int(r * 255), int(g * 255), int(b * 255), c[3]))
-
-            if god_rays_enabled:
+            if god_rays_enabled and self._day_cycle > 0.2:
                 self._rays_surf_cache.fill((0, 0, 0, 0))
                 sun_sx = WIDTH // 2 + sun_x_off
                 sun_sy = sun_y
-                for ri, angle in enumerate(self.sunray_angles):
-                    ra = angle + math.sin(time_float * 0.15 + ri) * 0.12
-                    ray_len = 300 + int(math.sin(time_float * 0.1 + ri * 1.5) * 100)
-                    ex = sun_sx + int(math.cos(ra) * ray_len)
-                    ey = sun_sy + int(math.sin(ra) * ray_len)
-                    ray_a = int(8 + 4 * math.sin(time_float * 0.4 + ri * 1.7))
-                    ray_w = max(1, 3 - ri // 5)
-                    pygame.draw.line(self._rays_surf_cache, (*sun_color, ray_a), (sun_sx, sun_sy), (ex, ey), ray_w)
+                for ri in range(6):
+                    angle = math.radians(ri * 60 + 30 + math.sin(time_float * 0.15 + ri) * 8)
+                    ray_len = 180 + int(math.sin(time_float * 0.1 + ri * 1.5) * 60)
+                    ex = sun_sx + int(math.cos(angle) * ray_len)
+                    ey = sun_sy + int(math.sin(angle) * ray_len)
+                    ray_a = 5
+                    if ray_a > 0:
+                        pygame.draw.line(self._rays_surf_cache, (*sun_color, ray_a), (sun_sx, sun_sy), (ex, ey), 2)
                 surf.blit(self._rays_surf_cache, (0, 0), special_flags=pygame.BLEND_ADD)
 
-            surf.blit(self.fog_surf, (0, 0), special_flags=pygame.BLEND_ADD)
-
             if film_grain_enabled:
-                grain_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-                for _ in range(2000):
-                    gx = random.randint(0, WIDTH - 1)
-                    gy = random.randint(0, HEIGHT - 1)
-                    ga = random.randint(0, int(255 * FILM_GRAIN_STRENGTH))
-                    if ga > 0:
-                        grain_surf.set_at((gx, gy), (255, 255, 255, ga))
-                surf.blit(grain_surf, (0, 0), special_flags=pygame.BLEND_ADD)
-        if FOG_DENSITY > 0:
-            tint_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            tint_surf.fill((*self._fog_tint, int(40 * FOG_DENSITY * 3)))
-            surf.blit(tint_surf, (0, 0), special_flags=pygame.BLEND_ADD)
+                self._grain_offset = (self._grain_offset + 3) % WIDTH
+                self._film_grain_surf.scroll(dx=3, dy=0)
+                surf.blit(self._film_grain_surf, (0, 0), special_flags=pygame.BLEND_ADD)
         self._perf_timings['post'] = (time.perf_counter() - _t0) * 1000
 
         _t0 = time.perf_counter()
@@ -1561,6 +1616,9 @@ class SnakeGame:
         for p in self.particles:
             p.draw(surf, self)
         self._perf_timings['particles'] = (time.perf_counter() - _t0) * 1000
+
+        if self.settings.get('vignette', POST_VIGNETTE_ENABLED):
+            surf.blit(self.vignette_surf, (0, 0))
 
         _t0 = time.perf_counter()
         if self.state == GameState.START:
@@ -1603,8 +1661,6 @@ class SnakeGame:
         surf.blit(self.grade_overlay, (0, 0))
 
         self._draw_birds(surf, time_float)
-
-        surf.blit(self.vignette_surf, (0, 0))
 
         if self._debug_overlay:
             from ui import draw_debug_overlay

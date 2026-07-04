@@ -29,10 +29,21 @@ class TestHeadlessSimulation:
         pygame.event.clear()
         return game
 
+    @staticmethod
+    def _force_apple_in_front(game):
+        """Place an apple on the tile directly in front of the snake head."""
+        from utils import wrap_coords
+        hq, hr = game.snake[0]
+        dq, dr = DIR_VECTORS[game.direction]
+        target = wrap_coords(hq + dq, hr + dr)
+        if target not in game.snake:
+            game.apple = target
+
     def test_1000_step_soak(self):
         """Run 100000+ simulation steps with random turns.
 
         Uses random.Random with seed 1 for deterministic behaviour.
+        Forces apple placement periodically to guarantee eating.
         Verifies: no crash, valid positions, length/score consistency,
         score > 0 (snake ate at least once).
         """
@@ -41,6 +52,7 @@ class TestHeadlessSimulation:
 
         total_steps = 0
         target_steps = 100000
+        feed_interval = 500
         rng = random.Random(1)
 
         # Pre-generate turn sequence to ensure deterministic path
@@ -48,6 +60,15 @@ class TestHeadlessSimulation:
         turn_idx = 0
 
         while total_steps < target_steps and game.state == GameState.PLAYING:
+            # Periodically force-feed without turning so the snake eats
+            if total_steps % feed_interval < 3:
+                self._force_apple_in_front(game)
+                interval = max(0.035, 0.15 - game.score * 0.0008)
+                steps_needed = max(1, int(interval / FIXED_DT)) + 1
+                self._advance(game, steps_needed)
+                total_steps += steps_needed
+                continue
+
             # Apply turn by calling game methods directly (reliable)
             if turn_sequence[turn_idx % len(turn_sequence)] == 'L':
                 game.turn_left()

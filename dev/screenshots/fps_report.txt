@@ -1,0 +1,23 @@
+SnakeV2 FPS Report
+==================================================
+Resolution: 1280x800
+
+post_on     :    42.8 FPS  (1.17s for 50 frames)
+post_off    :    88.7 FPS  (0.56s for 50 frames)
+
+Per-stage timings (average ms/frame):
+----------------------------------------
+  [post_on]
+    tiles       :    0.56 ms  (3%)
+    snake       :    0.75 ms  (4%)
+    particles   :    0.03 ms  (0%)
+    post        :    3.50 ms  (18%)
+    ui          :    1.57 ms  (8%)
+    total       :   13.07 ms  (67%)
+  [post_off]
+    tiles       :    0.55 ms  (5%)
+    snake       :    0.76 ms  (7%)
+    particles   :    0.01 ms  (0%)
+    post        :    0.00 ms  (0%)
+    ui          :    1.38 ms  (12%)
+    total       :    8.93 ms  (77%)

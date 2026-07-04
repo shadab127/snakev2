@@ -272,7 +272,8 @@ class GLRenderer:
                 self._set_uniform(self.prog_bloom_up, 'u_scene', 1)
                 self._quad_vao(self.prog_bloom_up).render(moderngl.TRIANGLES)
 
-            if POST_GOD_RAYS_ENABLED:
+            day_cycle = 0.5 + 0.5 * math.sin(time_float * SUN_ANGLE_SPEED)
+            if POST_GOD_RAYS_ENABLED and day_cycle > 0.2:
                 sun_x = WIDTH // 2 + int(math.sin(time_float * SUN_ANGLE_SPEED) * 200)
                 sun_y = int(HEIGHT * 0.15)
                 self._set_fbo(self.fbo_main, clear=False)
@@ -281,6 +282,7 @@ class GLRenderer:
                 self._set_uniform(self.prog_god_rays, 'u_sun_pos', (sun_x / WIDTH, sun_y / HEIGHT))
                 self._set_uniform(self.prog_god_rays, 'u_time', time_float)
                 self._set_uniform(self.prog_god_rays, 'u_sun_color', sun_color_norm)
+                self._set_uniform(self.prog_god_rays, 'u_day_cycle', day_cycle)
                 self._quad_vao(self.prog_god_rays).render(moderngl.TRIANGLES)
                 self.ctx.disable(moderngl.BLEND)
 

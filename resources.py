@@ -77,7 +77,7 @@ class ResourceManager:
         self.fog_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         for fy in range(HEIGHT):
             t = fy / HEIGHT
-            a = int(t ** 3 * 45)
+            a = int(t ** 2 * 20)
             if a > 0:
                 pygame.draw.line(self.fog_surf, (*FOG_COLOR, a), (0, fy), (WIDTH, fy))
 
@@ -374,7 +374,7 @@ class ResourceManager:
     def _update_sky(self, time_float, day_cycle):
         sky_top, sky_mid, sky_hor = compute_sky_color(time_float)
         self.bg_surf = pygame.Surface((WIDTH, HEIGHT))
-        for y in range(HEIGHT):
+        for y in range(0, HEIGHT, 2):
             t = y / HEIGHT
             if t < 0.5:
                 local_t = t / 0.5
@@ -382,7 +382,7 @@ class ResourceManager:
             else:
                 local_t = (t - 0.5) / 0.5
                 c = lerp_color(sky_mid, sky_hor, local_t)
-            pygame.draw.line(self.bg_surf, c, (0, y), (WIDTH, y))
+            self.bg_surf.fill(c, rect=(0, y, WIDTH, 2))
 
     def cleanup(self):
         pass
