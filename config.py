@@ -104,8 +104,8 @@ SNAKE_COLORS = [
     (22, 110, 60),
     (20, 95, 55),
 ]
-HEAD_COLOR = (130, 255, 100)
-HEAD_HIGHLIGHT = (180, 255, 200)
+HEAD_COLOR = (100, 255, 80)
+HEAD_HIGHLIGHT = (200, 255, 220)
 EYE_WHITE = (245, 255, 248)
 EYE_PUPIL = (10, 10, 25)
 EYE_REFLECTION = (255, 255, 255)
@@ -173,7 +173,7 @@ APPLE_SPAWN_SCALE_TIME = 0.3
 DEATH_ANIM_DURATION = 0.5
 
 # Phase 05 — Head and apple readability
-HEAD_SCALE = 1.35  # Head larger than body segments
+HEAD_SCALE = 1.6  # Head larger than body segments
 APPLE_SCALE = 1.10  # Apple size close to body segment
 
 # Phase 05 — Particle physics

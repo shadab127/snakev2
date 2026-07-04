@@ -91,7 +91,7 @@ class ResourceManager:
     def _init_sprites(self):
         self.master_head_sprite = self.generate_sphere_sprite(48, HEAD_COLOR, (230, 255, 240), shininess=20, scale_pattern=False)
         self.master_body_sprites = [
-            self.generate_sphere_sprite(48, color, (200, 255, 210), shininess=25, scale_pattern=True)
+            self.generate_sphere_sprite(48, color, (180, 230, 190), shininess=15, scale_pattern=True)
             for color in SNAKE_COLORS
         ]
         self.master_apple_sprite = self.generate_apple_sprite(48, APPLE_BASE, APPLE_HIGHLIGHT, APPLE_SPECULAR, APPLE_DEEP)
@@ -115,12 +115,12 @@ class ResourceManager:
                     if scale_pattern:
                         u = math.atan2(dy, dx) / math.pi
                         v = math.asin(dz) / math.pi
-                        scale_val = math.sin(u * 14 + v * 10) * math.cos(v * 14 - u * 10)
-                        scale_factor = 0.84 + 0.16 * scale_val
+                        scale_val = math.sin(u * 10 + v * 8) * math.cos(v * 10 - u * 8)
+                        scale_factor = 0.92 + 0.08 * scale_val
 
                     n_dot_l = dx * lx + dy * ly + dz * lz
                     diff = max(0.0, n_dot_l)
-                    diff_intensity = 0.15 + 0.85 * diff
+                    diff_intensity = 0.30 + 0.70 * diff
 
                     microfacet = (dz + 0.4 * (dz * dz)) ** 1.5
                     D = microfacet * 2
@@ -128,14 +128,14 @@ class ResourceManager:
                     F = 0.15 + (1.0 - 0.15) * (1.0 - n_dot_l) ** 5
                     spec = D * G * F / (4.0 * n_dot_l + 0.01) if n_dot_l > 0 else 0
 
-                    r = min(255, int(base_color[0] * diff_intensity * scale_factor + specular_color[0] * spec * 0.6))
-                    g = min(255, int(base_color[1] * diff_intensity * scale_factor + specular_color[1] * spec * 0.6))
-                    b = min(255, int(base_color[2] * diff_intensity * scale_factor + specular_color[2] * spec * 0.6))
+                    r = min(255, int(base_color[0] * diff_intensity * scale_factor + specular_color[0] * spec * 0.25))
+                    g = min(255, int(base_color[1] * diff_intensity * scale_factor + specular_color[1] * spec * 0.25))
+                    b = min(255, int(base_color[2] * diff_intensity * scale_factor + specular_color[2] * spec * 0.25))
 
-                    rim = (1.0 - dz) ** 2.5
-                    r = min(255, int(r + 80 * rim * (base_color[0] / 255.0)))
-                    g = min(255, int(g + 120 * rim * (base_color[1] / 255.0)))
-                    b = min(255, int(b + 90 * rim * (base_color[2] / 255.0)))
+                    rim = (1.0 - dz) ** 3.0
+                    r = min(255, int(r + 30 * rim * (base_color[0] / 255.0)))
+                    g = min(255, int(g + 40 * rim * (base_color[1] / 255.0)))
+                    b = min(255, int(b + 30 * rim * (base_color[2] / 255.0)))
 
                     alpha = 255
                     if dist_sq > 0.94:

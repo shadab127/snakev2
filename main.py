@@ -1218,7 +1218,7 @@ class SnakeGame:
                     diff = max(0.0, self._light_dir[2])
                     light = self._ambient + (1.0 - self._ambient) * diff
                     c = mul_color(base_color, light)
-                    c = add_color(c, mul_color(self._sun_color, light * 0.5))
+                    c = add_color(c, mul_color(self._sun_color, light * 0.2))
                     pygame.draw.polygon(surf, c, screen_pts)
 
         if idx == 0:
@@ -1247,25 +1247,25 @@ class SnakeGame:
             else:
                 perp_x, perp_y = 0, -1
 
-            head_glow_a = int(30 + 20 * math.sin(time_float * 4))
-            glow_r = max(1, int(sz * 0.7))
+            # Subtle green halo around head (alpha blend, not additive)
+            glow_r = max(1, int(sz * 0.5))
             glow_surf = self._head_glow_sprites.get(sz)
             if glow_surf is None:
                 d = glow_r * 2
                 glow_surf = pygame.Surface((d, d), pygame.SRCALPHA)
                 for gi in range(glow_r, 0, -1):
-                    ga = int(50 * (1 - gi / glow_r) * 0.3)
+                    ga = max(0, int(12 * (1 - gi / glow_r)))
                     if ga > 0:
                         pygame.draw.circle(glow_surf, (*HEAD_HIGHLIGHT, ga), (glow_r, glow_r), gi)
                 self._head_glow_sprites[sz] = glow_surf
-            glow_surf.set_alpha(int(head_glow_a * 255 / 50))
-            surf.blit(glow_surf, (int(sx - glow_r), int(sy - glow_r)), special_flags=pygame.BLEND_ADD)
+            glow_surf.set_alpha(int(30 + 20 * math.sin(time_float * 4)))
+            surf.blit(glow_surf, (int(sx - glow_r), int(sy - glow_r)))
 
             # Eye blink
             is_blinking = self.blink_timer <= 0.1
             if not is_blinking:
-                es = max(3, int(sz * 0.12))
-                eye_spread = es * 2.0
+                es = max(2, int(sz * 0.07))
+                eye_spread = es * 1.5
                 for side in [-1, 1]:
                     ex = int(sx + perp_x * eye_spread * side + tx * sz * 0.15)
                     ey = int(sy + perp_y * eye_spread * side + ty * sz * 0.15)
@@ -1282,24 +1282,26 @@ class SnakeGame:
                         ref_y = ey + int(perp_y * side * es * 0.5) - int(ty * sz * 0.02)
                         pygame.draw.circle(surf, EYE_REFLECTION, (ref_x, ref_y), max(1, es // 3))
 
-            # Tongue along tangent
+            # Tongue along tangent — offset start from head center
             tongue_len = int(HEX_SIZE * 0.16)
-            tongue_w = max(1, int(HEX_SIZE * 0.022))
+            tongue_w = max(1, int(HEX_SIZE * 0.020))
             tongue_flick = math.sin(time_float * 14) * 2
-            tx_t = int(sx + tx * (tongue_len + tongue_flick))
-            ty_t = int(sy + ty * (tongue_len + tongue_flick))
-            pygame.draw.line(surf, (210, 70, 70), (int(sx), int(sy)), (tx_t, ty_t), tongue_w)
+            tx_s = int(sx + tx * sz * 0.15)
+            ty_s = int(sy + ty * sz * 0.15)
+            tx_t = int(tx_s + tx * (tongue_len + tongue_flick))
+            ty_t = int(ty_s + ty * (tongue_len + tongue_flick))
+            pygame.draw.line(surf, (180, 60, 60), (tx_s, ty_s), (tx_t, ty_t), tongue_w)
             if dir_len > 0.001:
                 ppx = -ty / dir_len
                 ppy = tx / dir_len
                 fork_s = 2
-                fork_l = int(HEX_SIZE * 0.04)
-                pygame.draw.line(surf, (210, 70, 70),
+                fork_l = int(HEX_SIZE * 0.03)
+                pygame.draw.line(surf, (180, 60, 60),
                     (tx_t, ty_t),
                     (tx_t + int(ppx * fork_s) + int(tx * fork_l),
                      ty_t + int(ppy * fork_s) + int(ty * fork_l)),
                     max(1, tongue_w - 1))
-                pygame.draw.line(surf, (210, 70, 70),
+                pygame.draw.line(surf, (180, 60, 60),
                     (tx_t, ty_t),
                     (tx_t - int(ppx * fork_s) + int(tx * fork_l),
                      ty_t - int(ppy * fork_s) + int(ty * fork_l)),
