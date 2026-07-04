@@ -4,7 +4,7 @@ import os
 import tempfile
 import atexit
 from datetime import datetime
-from config import SAVE_FILENAME, PERSISTENCE_DIR, SCHEMA_VERSION, MUSIC_VOLUME, SFX_VOLUME, AMBIENCE_VOLUME, POST_BLOOM_ENABLED, POST_TONE_MAP_ENABLED, POST_GOD_RAYS_ENABLED, POST_VIGNETTE_ENABLED, POST_FILM_GRAIN_ENABLED
+from config import SAVE_FILENAME, PERSISTENCE_DIR, SCHEMA_VERSION, MUSIC_VOLUME, SFX_VOLUME, AMBIENCE_VOLUME, POST_BLOOM_ENABLED, POST_TONE_MAP_ENABLED, POST_GOD_RAYS_ENABLED, POST_VIGNETTE_ENABLED
 
 
 class PersistenceManager:
@@ -40,7 +40,6 @@ class PersistenceManager:
                 'tone_map': POST_TONE_MAP_ENABLED,
                 'god_rays': POST_GOD_RAYS_ENABLED,
                 'vignette': POST_VIGNETTE_ENABLED,
-                'film_grain': POST_FILM_GRAIN_ENABLED,
                 'show_fps': False,
             },
             'stats': {

@@ -40,9 +40,6 @@ class GLRenderer:
         self.prog_texture = self.ctx.program(
             vertex_shader=GL_FULLSCREEN_VS,
             fragment_shader=GL_TEXTURE_FS)
-        self.prog_texture_add = self.ctx.program(
-            vertex_shader=GL_FULLSCREEN_VS,
-            fragment_shader=GL_TEXTURE_ADD_FS)
         self.prog_bloom_down = self.ctx.program(
             vertex_shader=GL_FULLSCREEN_VS,
             fragment_shader=GL_BLOOM_DOWN_FS)
@@ -58,10 +55,6 @@ class GLRenderer:
         self.prog_tone_map = self.ctx.program(
             vertex_shader=GL_FULLSCREEN_VS,
             fragment_shader=GL_TONE_MAP_FS)
-        self.prog_film_grain = self.ctx.program(
-            vertex_shader=GL_FULLSCREEN_VS,
-            fragment_shader=GL_FILM_GRAIN_FS)
-
     def _create_fbos(self):
         self.tex_scene = self.ctx.texture((WIDTH, HEIGHT), 4)
         self.fbo_scene = self.ctx.framebuffer(color_attachments=[self.tex_scene])
@@ -168,7 +161,7 @@ class GLRenderer:
                 if mat_noise > 0.4:
                     base_top_color, base_side_color = list(TILE_DIRT), list(TILE_SIDE_DARK)
                 elif mat_noise < -0.3:
-                    base_top_color, base_side_color = [60, 110, 80], list(TILE_SIDE)
+                    base_top_color, base_side_color = [130, 220, 165], list(TILE_SIDE)
                 else:
                     base_top_color, base_side_color = list(TILE_TOP), list(TILE_SIDE)
                 moss_noise = noise['moss']
@@ -232,7 +225,7 @@ class GLRenderer:
             print(f"GL tile render error: {e}")
             return False
 
-    def post_process(self, scene_surf, time_float, fog_surf):
+    def post_process(self, scene_surf, time_float):
         if not self.available:
             return None
         try:
@@ -241,7 +234,6 @@ class GLRenderer:
             sun_color_norm = tuple(c / 255.0 for c in sun_color)
 
             tex_current = tex_scene
-            fbo_current = self.fbo_main
             self._set_fbo(self.fbo_main)
             self._render_quad(self.prog_texture, tex_scene)
 
@@ -285,17 +277,6 @@ class GLRenderer:
                 self._set_uniform(self.prog_god_rays, 'u_day_cycle', day_cycle)
                 self._quad_vao(self.prog_god_rays).render(moderngl.TRIANGLES)
                 self.ctx.disable(moderngl.BLEND)
-
-            if POST_FILM_GRAIN_ENABLED:
-                self._set_fbo(self.fbo_scene, clear=True)
-                self._render_quad(self.prog_film_grain, self.tex_main,
-                                  uniforms={'u_grain_strength': FILM_GRAIN_STRENGTH, 'u_time': time_float})
-                self.tex_scene, self.tex_main = self.tex_main, self.tex_scene
-                self.fbo_scene, self.fbo_main = self.fbo_main, self.fbo_scene
-                tex_current = self.tex_scene
-
-            self._render_quad(self.prog_texture_add, self.upload_texture('_fog', fog_surf),
-                              target_fbo=self.fbo_main, blend=True)
 
             raw = self.fbo_main.read(components=4, alignment=1, dtype='u1')
             return pygame.image.frombuffer(raw, (WIDTH, HEIGHT), 'RGBA')

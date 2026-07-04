@@ -5,6 +5,15 @@ from game_state import GameState
 from utils import hex_to_pixel, all_hexes
 
 
+def _draw_text_with_shadow(surf, font, text, color, rect, shadow_alpha=0, shadow_offset=1):
+    txt = font.render(text, True, color)
+    if shadow_alpha > 0:
+        shadow = font.render(text, True, (0, 0, 0))
+        shadow.set_alpha(shadow_alpha)
+        surf.blit(shadow, (rect.x + shadow_offset, rect.y + shadow_offset))
+    surf.blit(txt, rect)
+
+
 def _draw_panel(surf, x, y, w, h, alpha=200, r=8, g=12, b=30, border_color=(60, 140, 100), border_alpha=100):
     pane = pygame.Surface((w, h), pygame.SRCALPHA)
     for py in range(h):
@@ -17,7 +26,7 @@ def _draw_panel(surf, x, y, w, h, alpha=200, r=8, g=12, b=30, border_color=(60, 
     pygame.draw.rect(surf, (*border_color, 40), (x + 2, y + 2, w - 4, h - 4), 1, border_radius=7)
 
 
-def _draw_menu_items(surf, items, selection, x, y, game, spacing=42, align_center=True, return_rects=False):
+def _draw_menu_items(surf, items, selection, x, y, game, spacing=42, align_center=True, return_rects=False, shadow_alpha=0):
     rects = []
     for i, (label, sub_label) in enumerate(items):
         is_selected = i == selection
@@ -39,6 +48,10 @@ def _draw_menu_items(surf, items, selection, x, y, game, spacing=42, align_cente
             r = txt.get_rect(center=(x, iy))
         else:
             r = txt.get_rect(midleft=(x, iy))
+        if shadow_alpha > 0 and not is_selected:
+            shadow = font.render(label, True, (0, 0, 0))
+            shadow.set_alpha(shadow_alpha)
+            surf.blit(shadow, (r.x + 1, r.y + 1))
         if is_selected:
             glow_r = txt.get_rect(center=(x, iy))
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
@@ -206,21 +219,19 @@ def draw_title_screen(surf, game, menu_selection, time_float):
         ("Quit", ""),
     ]
 
-    # Logo
+    sa = TEXT_SHADOW_ALPHA
+
+    # Logo — draw once with glow behind it (no redundant overlay)
     logo = game.font_large.render("SNAKE V2", True, TEXT_WHITE)
     glow = game.font_large.render("SNAKE V2", True, TEXT_GLOW)
-    pulse = 0.6 + 0.4 * math.sin(time_float * 1.5)
-    glow_a = int(60 * pulse)
-    glow_overlay = game.font_large.render("SNAKE V2", True, (80, 220, 150, glow_a))
     for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0), (-3, 0), (3, 0)]:
         surf.blit(glow, (WIDTH // 2 - logo.get_width() // 2 + dx, 120 + dy))
-    surf.blit(glow_overlay, (WIDTH // 2 - logo.get_width() // 2, 120))
     lr = logo.get_rect(center=(WIDTH // 2, 120))
-    surf.blit(logo, lr)
+    _draw_text_with_shadow(surf, game.font_large, "SNAKE V2", TEXT_WHITE, lr, shadow_alpha=sa)
 
     subtitle = game.font_small.render("3D Hex Grid - Enhanced Edition", True, TEXT_DIM)
     sr = subtitle.get_rect(center=(WIDTH // 2, 175))
-    surf.blit(subtitle, sr)
+    _draw_text_with_shadow(surf, game.font_small, "3D Hex Grid - Enhanced Edition", TEXT_DIM, sr, shadow_alpha=sa)
 
     # Stats line
     stats = game.persistence.get_stats()
@@ -229,17 +240,16 @@ def draw_title_screen(surf, game, menu_selection, time_float):
         st = f"Best: {hs}  |  Games: {stats['games_played']}  |  Longest: {stats['longest_snake']}"
         stats_surf = game.font_micro.render(st, True, TEXT_DIM)
         ssr = stats_surf.get_rect(center=(WIDTH // 2, 200))
-        surf.blit(stats_surf, ssr)
+        _draw_text_with_shadow(surf, game.font_micro, st, TEXT_DIM, ssr, shadow_alpha=sa)
 
     menu_y = 260
     selected = min(menu_selection, len(items) - 1) if menu_selection >= 0 else 0
-    _draw_menu_items(surf, items, selected, WIDTH // 2, menu_y, game, spacing=50)
+    _draw_menu_items(surf, items, selected, WIDTH // 2, menu_y, game, spacing=50, shadow_alpha=sa)
 
     # Footer hint
     hint = game.font_micro.render("Arrow keys to navigate, Enter to select", True, TEXT_DIM)
     hr = hint.get_rect(center=(WIDTH // 2, HEIGHT - 40))
-    hint.set_alpha(100 + int(55 * math.sin(time_float * 1.2)))
-    surf.blit(hint, hr)
+    _draw_text_with_shadow(surf, game.font_micro, "Arrow keys to navigate, Enter to select", TEXT_DIM, hr, shadow_alpha=sa)
 
     game._menu_count = len(items)
     game._menu_selection = selected
@@ -274,7 +284,6 @@ def draw_settings_screen(surf, game, menu_selection, settings, time_float, from_
         (f"Tone Map {toggle_suffix(settings['tone_map'])}", ""),
         (f"God Rays {toggle_suffix(settings['god_rays'])}", ""),
         (f"Vignette {toggle_suffix(settings['vignette'])}", ""),
-        (f"Film Grain {toggle_suffix(settings['film_grain'])}", ""),
         (f"Show FPS {toggle_suffix(settings['show_fps'])}", ""),
         (f"Back", ""),
     ]

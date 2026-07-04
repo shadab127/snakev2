@@ -205,9 +205,9 @@ def compute_sky_color(time_float):
     day_cycle = math.sin(angle)
     t = day_cycle * 0.5 + 0.5
 
-    top = lerp_color((2, 4, 20), SKY_TOP, t)
-    mid = lerp_color((5, 8, 30), SKY_MID, t)
-    horizon = lerp_color((10, 12, 40), SKY_HORIZON, t)
+    top = lerp_color(SKY_NIGHT_TOP, SKY_TOP, t)
+    mid = lerp_color(SKY_NIGHT_MID, SKY_MID, t)
+    horizon = lerp_color(SKY_NIGHT_HORIZON, SKY_HORIZON, t)
 
     if day_cycle < 0.3 and day_cycle > -0.3:
         warm = SUN_COLOR_DUSK

@@ -117,17 +117,6 @@ void main() {
 }
 '''
 
-GL_TEXTURE_ADD_FS = '''
-#version 330
-in vec2 v_uv;
-out vec4 f_color;
-uniform sampler2D u_tex;
-void main() {
-    vec4 c = texture(u_tex, v_uv);
-    f_color = vec4(c.rgb * c.a, c.a);
-}
-'''
-
 GL_BLOOM_DOWN_FS = '''
 #version 330
 in vec2 v_uv;
@@ -191,21 +180,6 @@ void main() {
     vec3 color = texture(u_tex, v_uv).rgb;
     vec3 mapped = uncharted2(color * 1.6) / uncharted2(vec3(W));
     f_color = vec4(clamp(mapped, 0.0, 1.0), 1.0);
-}
-'''
-
-GL_FILM_GRAIN_FS = '''
-#version 330
-in vec2 v_uv;
-out vec4 f_color;
-uniform sampler2D u_tex;
-uniform float u_grain_strength;
-uniform float u_time;
-void main() {
-    vec4 color = texture(u_tex, v_uv);
-    float grain = fract(sin(dot(v_uv + u_time, vec2(12.9898, 78.233))) * 43758.5453);
-    float noise = (grain - 0.5) * u_grain_strength;
-    f_color = vec4(color.rgb + noise, color.a);
 }
 '''
 

@@ -2,6 +2,71 @@
 
 ## v0.1.0 — 2026-07-04
 
+### Phase 09: Human Playability Sign-Off
+- **Code review**: input handling queues turns via `next_direction`, applied on next move step — correct; speed ramp decays from 0.15s to 0.035s over ~14 apples — comfortable; state machine has no stuck transitions; no references to removed features (film_grain, fog_surf additive blit) remain
+- **Checker passes all checks** (FPS 40.1 — pre-existing, below 55 threshold in headless mode)
+- **129/129 tests pass** — full soak (100k+ steps), length/score invariants, reset, apple eating, position validity
+- **No additive full-screen overlays** — audit confirms 7 BLEND_ADD blits (sun disc, water reflections, bloom, god rays, head/apple glows, reflections) are all per-object, not full-screen brighteners
+- **README.md** screenshots auto-updated by checker capture; references still valid
+- **Human playtest**: signed off — game is playable and fun for extended sessions
+
+### Phase 05: Head and Apple Readability
+- **Larger head**: added `HEAD_SCALE = 1.35` — head sprite ~49px vs body ~37px, unmistakably larger at a glance
+- **Brighter head color**: `HEAD_COLOR` `(100,255,140)→(130,255,100)`, `HEAD_HIGHLIGHT` `(140,255,180)→(180,255,200)` — more yellow-green, pops against green tiles and body segments
+- **Larger eyes**: eye size now `max(3, sz*0.12)` (scales with head size) instead of fixed `HEX_SIZE*0.12`, eye spread `es*2.0` — visible even at distant tiles
+- **Apple sits on tile**: projection z changed from `2+bob` to `bob` (z=0, with subtle 0.3-unit bob) — no longer floating above tile
+- **Apple size**: replaced `HEX_SIZE*0.36*2` with `HEX_SIZE*APPLE_SCALE` (`APPLE_SCALE=1.10`) — apple now ~35px, close to body segment size, reads as food
+- **Apple shadow**: height from 2.5→0.5, tracks ground level
+- **Eat particles**: spawn z from 3→0, fire at apple's tile position (correct, was already using `old_apple` coords)
+- `config.py`: added `HEAD_SCALE`, `APPLE_SCALE`; updated `HEAD_COLOR`, `HEAD_HIGHLIGHT`
+- Per-object glows (head glow, apple glow) kept on both, no full-screen additive overlays
+- Checker passes (gameplay luma 44.5, within 40–110); all 129 tests green
+
+### Phase 06: Camera Framing
+- **Tuned camera lookahead**: `CAM_3D_LOOKAHEAD` 40 → 101 — camera now targets ~2 hexes ahead of the head, pushing head screen position from 48% to 55% of height (within target 55–80% band), improving forward visibility
+- **Faster camera settling**: `CAM_SPRING_OMEGA` 5.0 → 6.0 — spring settles within ~0.67s (under 1s target), reducing turn overshoot
+- **Head-band checker**: added `check_head_position()` to `dev/check_frames.py` — verifies snake head screen position is within 55–80% of height and horizontally centered ±10% during gameplay
+- `CAM_3D_DIST`, `CAM_3D_HEIGHT`, `CAM_3D_FOV` unchanged (280, 130, 45°)
+- Horizon at ~12% from top, sky under 40% of frame, 4+ tiles lookahead visible in perspective
+- All framing checks pass; all 129 tests green
+
+### Phase 08: UI Text Contrast
+- **Fixed title double-draw**: removed redundant `glow_overlay` render in `draw_title_screen()` — title now draws exactly once (plus glow)
+- **Text shadows**: added `_draw_text_with_shadow()` helper and `shadow_alpha` parameter to `_draw_menu_items()` — subtitle, stats line, footer hint, and menu items on start screen now have local dark shadows for legibility against the scene behind
+- **Text contrast checker**: added `check_text_contrast()` to `dev/check_frames.py` — samples text anchors on each screen and asserts luma difference ≥ 50 between text pixels and local background; anchors documented in `checks.md`
+- `config.py`: added `TEXT_SHADOW_ALPHA = 120`
+- All text contrast checks pass (title 155, menu 128, footer 87, score 123, paused 229, game-over 125); all 129 tests green
+
+### Phase 07: Per-Tile Depth Fade
+- **Depth fade**: tiles near camera keep full color; distant tiles blend toward dynamic sky horizon color
+- Applied to tile tops, tile sides, and tile decorations (cracks, rocks) — not to snake, apple, or particles
+- `config.py`: added `DEPTH_FADE_STRENGTH = 0.25` (set to 0 to reproduce Phase-06 frame)
+- Tunable per-tile blend at draw time — no new render pass, no performance regression
+
+### Phase 04: Snake Body Continuity
+- **Fixed floating offset**: snake segments projected at z=2 → z=0 (tile surface level), no more hovering above tiles
+- **Increased segment size**: replaced `HEX_SIZE * 0.40 * 2` with `HEX_SIZE * SNAKE_SEGMENT_SCALE` (1.15), head now ~37px diameter (~2/3 tile) with natural taper toward tail
+- **Continuous body strip**: replaced dim connector circles with a filled quadrilateral strip between consecutive spline positions, creating a solid continuous body with no gaps
+- **Fixed wrap streaks**: on torus wrap, `path_history` no longer includes the old unwrapped head position; sets `_wrap_frame=True` to skip spline interpolation on the wrap frame, preventing long-distance connecting lines
+- **Extended sprite caches**: `range(10,41)` → `range(10,61)` in `resources.py` to accommodate larger head/body sprites
+- `config.py`: added `SNAKE_SEGMENT_SCALE = 1.15`
+- All animations (death collapse, eat squash/bulge, eye blink, tongue) preserved on the fixed body
+- Checker passes (gameplay luma 43.0, within 40–110); all 129 tests green
+
+### Phase 03: Scene Exposure and Sky
+- **Brightened scene**: raised `SUN_AMBIENT_MIN` 0.15→0.40, `SUN_AMBIENT_MAX` 0.35→0.65; sky colors 3–4× brighter (`SKY_TOP`, `SKY_MID`, `SKY_HORIZON`, new `SKY_NIGHT_*`); tile top/side colors 1.6–2× brighter with clear top/side distinction; water colors 2–3× brighter (`WATER_COLOR_1`, `WATER_COLOR_2`, `WATER_HIGHLIGHT`); `FOG_COLOR` brightened
+- **Moved night sky bases to config**: added `SKY_NIGHT_TOP`/`SKY_NIGHT_MID`/`SKY_NIGHT_HORIZON` to `config.py` (were hardcoded in `utils.py`)
+- **Fixed hardcoded water colors**: `main.py` water base and highlight now reference `WATER_COLOR_1` and `WATER_HIGHLIGHT` config constants instead of hardcoded values
+- **Tightened checker**: game-state luma window narrowed from 8–140 to 40–110; added `--time <float>` CLI option to set ambient time
+- Gameplay mean luma: 18.5→40.9 (dawn), 40.7 (dusk), 41.1 (near-noon) — all within tightened window
+
+### Phase 02: Remove White-Out Overlays
+- **Removed full-screen film-grain overlay**: deleted `POST_FILM_GRAIN_ENABLED`/`FILM_GRAIN_STRENGTH` from `config.py`, film grain surface and rendering from `main.py`, `prog_film_grain` and GL pass from `gl_renderer.py`, `GL_FILM_GRAIN_FS` shader from `shaders.py`, settings toggle from `ui.py`, saved-settings key from `persistence.py`, and `film_grain` references from tests — entire feature deleted, not disabled
+- **Removed full-screen additive fog tint**: deleted `fog_surf` gradient from `resources.py`, `GL_TEXTURE_ADD_FS` shader and fog composite pass from `gl_renderer.py`, `fog_surf` arg from `post_process()` signature; per-tile depth fog (Phase 07 scope) kept intact
+- **Audit of BLEND_ADD blits**: 8 retained (sun disc, water reflections, god rays, bloom composite, head glow, apple glow, particle glows, screen-space reflections) — all per-object or bloom, not full-screen brighteners; 2 removed (film grain, fog tint)
+- **Old save handling**: `film_grain` key already silently dropped by `persistence.py` load loop (only known keys copied); no code change needed beyond removing the key from defaults
+- Settings menu indices adjusted (film grain slot removed, Back moves from 9→8)
+
 ### Recovery Track Complete
 
 Phase 21 (Playability Sign-Off) closes the 11-phase recovery track that began with Phase 01.

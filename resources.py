@@ -74,13 +74,6 @@ class ResourceManager:
                 sc = (int(SUN_COLOR[0] * t_norm), int(SUN_COLOR[1] * t_norm), int(SUN_COLOR[2] * t_norm), int(180 * t_norm))
             pygame.draw.circle(self._start_sun_surf, sc, (sr, sr), si)
 
-        self.fog_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-        for fy in range(HEIGHT):
-            t = fy / HEIGHT
-            a = int(t ** 2 * 20)
-            if a > 0:
-                pygame.draw.line(self.fog_surf, (*FOG_COLOR, a), (0, fy), (WIDTH, fy))
-
         self.vignette_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         max_rv = int(math.hypot(WIDTH, HEIGHT) * 0.6)
         for rv in range(max_rv, 0, -1):
@@ -226,16 +219,16 @@ class ResourceManager:
         self._head_sprites = {}
         self._body_sprites = {}
         self._apple_sprites = {}
-        for sz in range(10, 41):
+        for sz in range(10, 61):
             self._head_sprites[sz] = pygame.transform.smoothscale(self.master_head_sprite, (sz, sz))
             self._apple_sprites[sz] = pygame.transform.smoothscale(self.master_apple_sprite, (sz, sz))
         for ci, sprite in enumerate(self.master_body_sprites):
             self._body_sprites[ci] = {}
-            for sz in range(10, 41):
+            for sz in range(10, 61):
                 self._body_sprites[ci][sz] = pygame.transform.smoothscale(sprite, (sz, sz))
 
         self._head_glow_sprites = {}
-        for sz in range(10, 41):
+        for sz in range(10, 61):
             glow_r = max(1, int(sz * 0.7))
             d = glow_r * 2
             surf = pygame.Surface((d, d), pygame.SRCALPHA)
@@ -306,7 +299,7 @@ class ResourceManager:
                 base_top_color = list(TILE_DIRT)
                 base_side_color = list(TILE_SIDE_DARK)
             elif mat_noise < -0.3:
-                base_top_color = [60, 110, 80]
+                base_top_color = [130, 220, 165]
                 base_side_color = list(TILE_SIDE)
             else:
                 base_top_color = list(TILE_TOP)

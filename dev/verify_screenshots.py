@@ -181,7 +181,7 @@ def measure_fps(game, num_frames=100):
     configs = [
         ("post_on", None),
         ("post_off", {"bloom": False, "tone_map": False, "god_rays": False,
-                      "vignette": False, "film_grain": False}),
+                       "vignette": False}),
     ]
 
     for label, settings_override in configs:
@@ -190,7 +190,7 @@ def measure_fps(game, num_frames=100):
         else:
             game.settings.update({
                 "bloom": True, "tone_map": True, "god_rays": True,
-                "vignette": True, "film_grain": True,
+                "vignette": True,
             })
 
         for _ in range(5):

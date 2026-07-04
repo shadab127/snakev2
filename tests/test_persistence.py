@@ -28,7 +28,7 @@ class TestPersistenceRoundTrip:
         pm.set_settings({'music_volume': 0.8, 'sfx_volume': 0.3,
                          'ambience_volume': 0.1, 'bloom': False,
                          'tone_map': True, 'god_rays': False,
-                         'vignette': True, 'film_grain': False,
+                          'vignette': True,
                          'show_fps': True})
         pm.save()
         pm2 = _pm(tmp_dir)
@@ -190,7 +190,7 @@ class TestPersistenceEdgeCases:
         pm.set_settings({'music_volume': 0.0, 'sfx_volume': 0.0,
                          'ambience_volume': 0.0, 'bloom': False,
                          'tone_map': False, 'god_rays': False,
-                         'vignette': False, 'film_grain': False,
+                          'vignette': False,
                          'show_fps': False})
         pm.save()
         pm2 = _pm(tmp_dir)
