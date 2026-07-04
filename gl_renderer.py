@@ -3,7 +3,7 @@ import struct
 import pygame
 from config import *
 from shaders import *
-from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal
+from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color
 from game_state import GameState
 
 try:
@@ -55,6 +55,12 @@ class GLRenderer:
         self.prog_god_rays = self.ctx.program(
             vertex_shader=GL_FULLSCREEN_VS,
             fragment_shader=GL_GOD_RAYS_FS)
+        self.prog_tone_map = self.ctx.program(
+            vertex_shader=GL_FULLSCREEN_VS,
+            fragment_shader=GL_TONE_MAP_FS)
+        self.prog_film_grain = self.ctx.program(
+            vertex_shader=GL_FULLSCREEN_VS,
+            fragment_shader=GL_FILM_GRAIN_FS)
 
     def _create_fbos(self):
         self.tex_scene = self.ctx.texture((WIDTH, HEIGHT), 4)
@@ -207,11 +213,18 @@ class GLRenderer:
             else:
                 self.vbo.write(bytes(buf))
             self._set_fbo(fbo)
-            time_float = game.frame_count / 60.0
+            time_float = game.render_time
             self._set_uniform(self.prog_tile, 'u_time_float', time_float)
             self._set_uniform(self.prog_tile, 'u_game_over', 1 if game.state == GameState.GAME_OVER else 0)
             self._set_uniform(self.prog_tile, 'u_eat_flash', game.eat_flash)
             self._set_uniform(self.prog_tile, 'u_screen_size', (float(WIDTH), float(HEIGHT)))
+            light_dir, ambient, sun_color = compute_sun_light(time_float)
+            self._set_uniform(self.prog_tile, 'u_light_dir', light_dir)
+            self._set_uniform(self.prog_tile, 'u_ambient', ambient)
+            self._set_uniform(self.prog_tile, 'u_sun_color', tuple(c / 255.0 for c in sun_color))
+            sky_top, sky_mid, sky_hor = compute_sky_color(time_float)
+            fog_c = tuple(c / 255.0 for c in lerp_color(sky_mid, FOG_COLOR, 0.6))
+            self._set_uniform(self.prog_tile, 'u_fog_color', fog_c)
             if self.vao_tile:
                 self.vao_tile.render(moderngl.TRIANGLES, vertices=self.vertex_count)
             return True
@@ -224,35 +237,64 @@ class GLRenderer:
             return None
         try:
             tex_scene = self.upload_texture('_scene', scene_surf)
+            light_dir, ambient, sun_color = compute_sun_light(time_float)
+            sun_color_norm = tuple(c / 255.0 for c in sun_color)
+
+            tex_current = tex_scene
+            fbo_current = self.fbo_main
             self._set_fbo(self.fbo_main)
             self._render_quad(self.prog_texture, tex_scene)
-            bw, bh = WIDTH // 4, HEIGHT // 4
-            self._set_fbo(self.fbo_bloom1)
-            self._render_quad(self.prog_bloom_down, tex_scene,
-                              uniforms={'u_texel_size': (1.0 / WIDTH, 1.0 / HEIGHT)})
-            self._set_fbo(self.fbo_bloom2)
-            self._render_quad(self.prog_bloom_blur, self.tex_bloom1,
-                              uniforms={'u_texel_size': (1.0 / bw, 1.0 / bh), 'u_direction': (1.0, 0.0)})
-            self._set_fbo(self.fbo_bloom1)
-            self._render_quad(self.prog_bloom_blur, self.tex_bloom2,
-                              uniforms={'u_texel_size': (1.0 / bw, 1.0 / bh), 'u_direction': (0.0, 1.0)})
-            self.tex_bloom1.use(0)
-            tex_scene.use(1)
-            self._set_fbo(self.fbo_main, clear=False)
-            self._set_uniform(self.prog_bloom_up, 'u_bloom', 0)
-            self._set_uniform(self.prog_bloom_up, 'u_scene', 1)
-            self._quad_vao(self.prog_bloom_up).render(moderngl.TRIANGLES)
-            sun_x = WIDTH // 2 + int(math.sin(time_float * SUN_ANGLE_SPEED) * 200)
-            sun_y = int(HEIGHT * 0.15)
-            self._set_fbo(self.fbo_main, clear=False)
-            self.ctx.enable(moderngl.BLEND)
-            self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE
-            self._set_uniform(self.prog_god_rays, 'u_sun_pos', (sun_x / WIDTH, sun_y / HEIGHT))
-            self._set_uniform(self.prog_god_rays, 'u_time', time_float)
-            self._quad_vao(self.prog_god_rays).render(moderngl.TRIANGLES)
-            self.ctx.disable(moderngl.BLEND)
+
+            if POST_TONE_MAP_ENABLED:
+                self._set_fbo(self.fbo_scene, clear=True)
+                self._render_quad(self.prog_tone_map, tex_current)
+                tex_current = self.tex_scene
+                self._set_fbo(self.fbo_main, clear=False)
+            else:
+                tex_current = tex_scene
+
+            if POST_BLOOM_ENABLED:
+                bw, bh = WIDTH // 4, HEIGHT // 4
+                self._set_fbo(self.fbo_bloom1)
+                self._render_quad(self.prog_bloom_down, tex_current,
+                                  uniforms={'u_texel_size': (1.0 / WIDTH, 1.0 / HEIGHT),
+                                            'u_bloom_threshold': BLOOM_THRESHOLD})
+                self._set_fbo(self.fbo_bloom2)
+                self._render_quad(self.prog_bloom_blur, self.tex_bloom1,
+                                  uniforms={'u_texel_size': (1.0 / bw, 1.0 / bh), 'u_direction': (1.0, 0.0)})
+                self._set_fbo(self.fbo_bloom1)
+                self._render_quad(self.prog_bloom_blur, self.tex_bloom2,
+                                  uniforms={'u_texel_size': (1.0 / bw, 1.0 / bh), 'u_direction': (0.0, 1.0)})
+                self.tex_bloom1.use(0)
+                tex_current.use(1)
+                self._set_fbo(self.fbo_main, clear=False)
+                self._set_uniform(self.prog_bloom_up, 'u_bloom', 0)
+                self._set_uniform(self.prog_bloom_up, 'u_scene', 1)
+                self._quad_vao(self.prog_bloom_up).render(moderngl.TRIANGLES)
+
+            if POST_GOD_RAYS_ENABLED:
+                sun_x = WIDTH // 2 + int(math.sin(time_float * SUN_ANGLE_SPEED) * 200)
+                sun_y = int(HEIGHT * 0.15)
+                self._set_fbo(self.fbo_main, clear=False)
+                self.ctx.enable(moderngl.BLEND)
+                self.ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE
+                self._set_uniform(self.prog_god_rays, 'u_sun_pos', (sun_x / WIDTH, sun_y / HEIGHT))
+                self._set_uniform(self.prog_god_rays, 'u_time', time_float)
+                self._set_uniform(self.prog_god_rays, 'u_sun_color', sun_color_norm)
+                self._quad_vao(self.prog_god_rays).render(moderngl.TRIANGLES)
+                self.ctx.disable(moderngl.BLEND)
+
+            if POST_FILM_GRAIN_ENABLED:
+                self._set_fbo(self.fbo_scene, clear=True)
+                self._render_quad(self.prog_film_grain, self.tex_main,
+                                  uniforms={'u_grain_strength': FILM_GRAIN_STRENGTH, 'u_time': time_float})
+                self.tex_scene, self.tex_main = self.tex_main, self.tex_scene
+                self.fbo_scene, self.fbo_main = self.fbo_main, self.fbo_scene
+                tex_current = self.tex_scene
+
             self._render_quad(self.prog_texture_add, self.upload_texture('_fog', fog_surf),
                               target_fbo=self.fbo_main, blend=True)
+
             raw = self.fbo_main.read(components=4, alignment=1, dtype='u1')
             return pygame.image.frombuffer(raw, (WIDTH, HEIGHT), 'RGBA')
         except Exception as e:

@@ -2,7 +2,7 @@ import math
 import random
 import pygame
 from config import *
-from utils import all_hexes, hex_to_pixel, hex_corners, compute_tile_ao, lerp_color, perlin_noise, generate_soft_shadow, tile_noise
+from utils import all_hexes, hex_to_pixel, hex_corners, compute_tile_ao, lerp_color, perlin_noise, generate_soft_shadow, tile_noise, compute_sky_color
 
 
 class ResourceManager:
@@ -285,5 +285,128 @@ class ResourceManager:
             })
         self.sunray_angles = [math.radians(i * 30 + random.uniform(-4, 4)) for i in range(12)]
 
+        all_hex_list = list(all_hexes())
+        self._all_hexes_cache = all_hex_list
+
+        self._tile_static_cache = {}
+        self._ground_static_cache = {}
+
+        for q, r in all_hex_list:
+            cx, cy = hex_to_pixel(q, r)
+            corners_world = hex_corners(cx, cy)
+            noise = tile_noise(q, r)
+            noise_val = noise['detail'] * 0.15
+
+            dist_from_center = (q * q + r * r + q * r) ** 0.5 / GRID_RADIUS
+            dist_factor = max(0, 1 - dist_from_center * 0.3)
+            tex_variation = 1.0 + 0.06 * noise['tex']
+
+            mat_noise = noise['base']
+            if mat_noise > 0.4:
+                base_top_color = list(TILE_DIRT)
+                base_side_color = list(TILE_SIDE_DARK)
+            elif mat_noise < -0.3:
+                base_top_color = [60, 110, 80]
+                base_side_color = list(TILE_SIDE)
+            else:
+                base_top_color = list(TILE_TOP)
+                base_side_color = list(TILE_SIDE)
+
+            moss_noise = noise['moss']
+            if moss_noise > 0.15:
+                moss_t = min(1.0, (moss_noise - 0.15) * 3)
+                base_top_color = list(lerp_color(tuple(base_top_color), TILE_MOSS, moss_t * 0.35))
+
+            dirt_noise = noise['dirt']
+            if dirt_noise > 0.2:
+                dirt_t = min(1.0, (dirt_noise - 0.2) * 2.5)
+                base_top_color[0] = min(255, int(base_top_color[0] + (TILE_DIRT[0] - base_top_color[0]) * dirt_t * 0.25))
+                base_top_color[1] = min(255, int(base_top_color[1] + (TILE_DIRT[1] - base_top_color[1]) * dirt_t * 0.25))
+                base_top_color[2] = min(255, int(base_top_color[2] + (TILE_DIRT[2] - base_top_color[2]) * dirt_t * 0.25))
+
+            noise_offset = int(noise_val * 20)
+            for i in range(3):
+                base_top_color[i] = max(0, min(255, base_top_color[i] + noise_offset))
+
+            grass_seed = noise['grass']
+            grass_blades = []
+            if grass_seed > 0.1:
+                blade_count = int((grass_seed - 0.1) * 7)
+                for bi in range(blade_count):
+                    a = grass_seed * 6.28 + bi * 1.7 + q * 0.3
+                    d = 0.25 + (hash((q, r, bi)) % 100) / 250.0
+                    bx = cx + math.cos(a) * d * HEX_SIZE
+                    by = cy + math.sin(a) * d * HEX_SIZE
+                    blade_h = 3 + (hash((q, r, bi + 100)) % 30) / 15.0
+                    blade_w = max(1, int(1 + (hash((q, r, bi + 200)) % 3)))
+                    gc = lerp_color((35, 115, 50), (55, 160, 70), 0.3 + (hash((q, r, bi + 300)) % 100) / 200.0)
+                    has_flower = hash((q, r, bi + 400)) % 5 == 0
+                    flower_color = None
+                    if has_flower:
+                        flower_color = [(255, 200, 80), (240, 130, 150), (200, 140, 255)][hash((q, r, bi + 500)) % 3]
+                    grass_blades.append({
+                        'bx': bx, 'by': by,
+                        'blade_h': blade_h, 'blade_w': blade_w,
+                        'gc': gc, 'has_flower': has_flower,
+                        'flower_color': flower_color,
+                    })
+
+            self._tile_static_cache[(q, r)] = {
+                'corners_world': corners_world,
+                'center_world': (cx, cy),
+                'base_top_color': tuple(base_top_color),
+                'base_side_color': tuple(base_side_color),
+                'tex_variation': tex_variation,
+                'dist_from_center': dist_from_center,
+                'dist_factor': dist_factor,
+                'grass_seed': grass_seed,
+                'grass_blades': grass_blades,
+                'noise': noise,
+            }
+
+            ground_dist = dist_from_center
+            ground_c = lerp_color(GROUND_LOW, GROUND_DEEP, ground_dist)
+            self._ground_static_cache[(q, r)] = {
+                'bot_world': [(c_x, c_y, -TILE_HEIGHT - 4) for c_x, c_y in corners_world],
+                'color': ground_c,
+            }
+
+    def _update_sky(self, time_float, day_cycle):
+        sky_top, sky_mid, sky_hor = compute_sky_color(time_float)
+        self.bg_surf = pygame.Surface((WIDTH, HEIGHT))
+        for y in range(HEIGHT):
+            t = y / HEIGHT
+            if t < 0.5:
+                local_t = t / 0.5
+                c = lerp_color(sky_top, sky_mid, local_t)
+            else:
+                local_t = (t - 0.5) / 0.5
+                c = lerp_color(sky_mid, sky_hor, local_t)
+            pygame.draw.line(self.bg_surf, c, (0, y), (WIDTH, y))
+
     def cleanup(self):
         pass
+
+
+def generate_app_icon(size=32):
+    surf = pygame.Surface((size, size), pygame.SRCALPHA)
+    cx, cy = size // 2, size // 2
+    r = size // 2 - 2
+    pygame.draw.circle(surf, (60, 180, 80), (cx, cy), r)
+    pygame.draw.circle(surf, (80, 220, 100), (cx - 1, cy - 1), r - 1)
+    eye_r = max(2, r // 5)
+    eye_y = cy - r // 3
+    for side in [-1, 1]:
+        ex = cx + side * r // 3
+        pygame.draw.circle(surf, (255, 255, 255), (ex, eye_y), eye_r)
+        pygame.draw.circle(surf, (5, 5, 25), (ex, eye_y), max(1, eye_r // 2))
+    pupil_x = cx - 1
+    for side in [-1, 1]:
+        ex = cx + side * r // 3
+        pygame.draw.circle(surf, (255, 255, 255, 180), (ex - 1, eye_y - 1), max(1, eye_r // 3))
+    tongue_start = cy + r // 3
+    pygame.draw.line(surf, (210, 60, 60), (cx, tongue_start), (cx, tongue_start + 4), 2)
+    fork_x = 1
+    pygame.draw.line(surf, (210, 60, 60), (cx, tongue_start + 4), (cx - fork_x, tongue_start + 6), 1)
+    pygame.draw.line(surf, (210, 60, 60), (cx, tongue_start + 4), (cx + fork_x, tongue_start + 6), 1)
+    return surf

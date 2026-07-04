@@ -4,37 +4,86 @@ import random
 import sys
 import time
 import struct
+from collections import deque
 from config import *
 from game_state import GameState
 from utils import (perlin_noise, catmull_rom, hex_side_normal, hex_to_pixel,
-                   hex_corners, all_hexes, lerp_color,
+                   hex_corners, all_hexes, in_bounds, lerp_color,
                    mul_color, add_color, screen_shake_offset, compute_tile_ao,
                    dot3, tile_noise, generate_soft_shadow, _perlin_cache,
-                   wrap_coords)
+                   wrap_coords, compute_sun_light, compute_lighting, compute_sky_color,
+                   sample_spline_path)
 from particle import Particle, ParticlePool
 from resources import ResourceManager
 from gl_renderer import GLRenderer
 from camera import Camera
-from ui import draw_ui, draw_pause_overlay, draw_game_over, draw_start_screen, draw_minimap
+from ui import draw_ui, draw_pause_menu, draw_game_over, draw_title_screen, draw_settings_screen, draw_minimap
+from audio import AudioManager
+from persistence import PersistenceManager
+from __version__ import __version__
+from resources import generate_app_icon
+
+_CLI_ARGS = {}
+
+
+def _parse_cli_args():
+    global _CLI_ARGS
+    _CLI_ARGS = {'fullscreen': False, 'no_gl': False}
+    for arg in sys.argv[1:]:
+        if arg == '--version':
+            print(f'SnakeV2 v{__version__}')
+            sys.exit(0)
+        elif arg == '--fullscreen':
+            _CLI_ARGS['fullscreen'] = True
+        elif arg == '--windowed':
+            _CLI_ARGS['fullscreen'] = False
+        elif arg == '--no-gl':
+            _CLI_ARGS['no_gl'] = True
+        elif arg in ('-h', '--help'):
+            print('Usage: snakev2 [--windowed] [--fullscreen] [--no-gl] [--version]')
+            sys.exit(0)
 
 
 class SnakeGame:
     def __init__(self):
-        pygame.init()
+        try:
+            pygame.init()
+        except pygame.error as e:
+            print("FATAL: Failed to initialize pygame.")
+            print(f"       {e}")
+            print("       Ensure a display is available or use SDL_VIDEODRIVER=dummy.")
+            sys.exit(1)
+
         self.clock = pygame.time.Clock()
         self.start_time = time.time()
         flags = pygame.SCALED | pygame.RESIZABLE
-        self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
-        pygame.display.set_caption('SnakeV2 - Enhanced 3D')
+        if _CLI_ARGS.get('fullscreen'):
+            flags |= pygame.FULLSCREEN
+        try:
+            self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+        except pygame.error as e:
+            print("FATAL: Could not create display window.")
+            print(f"       {e}")
+            sys.exit(1)
+        pygame.display.set_caption(f'SnakeV2 v{__version__}')
+        pygame.display.set_icon(generate_app_icon(32))
 
         self.resources = ResourceManager()
+        self.audio = AudioManager()
+        self.persistence = PersistenceManager()
+        self.persistence.load()
 
-        self.frame_count = 0
+        self.render_time = 0.0
         self.move_timer = 0
         self.move_lerp = 0.0
         self.prev_snake_positions = {}
         self.smooth_positions = {}
-        self.particles = ParticlePool(500)
+        self.particles = ParticlePool(MAX_PARTICLES)
+        self.path_history = deque(maxlen=MAX_PATH_LENGTH)
+        self.eat_anim = {'timer': 0, 'bulge_idx': -1, 'bulge_progress': 0}
+        self.death_anim = {'timer': 0, 'phase': 'none'}
+        self.apple_anim = {'spawn_timer': 0, 'was_spawned': False}
+        self.blink_timer = random.uniform(2, 5)
         self.eat_flash = 0
         self.screen_shake = 0
         self.ambient_time = 0
@@ -42,24 +91,78 @@ class SnakeGame:
 
         self._dirty_rects = []
         self._prev_dirty_rects = []
-        self._full_redraw_counter = 0
         self._full_redraw_requested = True
+        self._debug_overlay = False
+        self._perf_timings = {}
 
         self.water_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self._tile_cache = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self._tile_cache_valid = False
         self.gl_renderer = GLRenderer()
+        if _CLI_ARGS.get('no_gl'):
+            self.gl_renderer.available = False
         self.camera = Camera()
         self.draw_cache = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
         self.cloud_surf_cache = pygame.Surface((WIDTH, HEIGHT // 2), pygame.SRCALPHA)
 
+        self.grade_warm_flash = 0.0
+        self.grade_cool_shift = 0.0
+        self.grade_death_darken = 0.0
+        self.grade_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
+        self.birds = []
+        for _ in range(AMBIENT_BIRD_COUNT):
+            self._spawn_bird()
+
         for q, r in all_hexes():
             tile_noise(q, r)
         _perlin_cache.clear()
 
+        self.high_score = self.persistence.get_high_score()
+        self._game_start_time = time.time()
+        self._apples_eaten_this_game = 0
+        self._max_snake_len_this_game = 3
+        self._game_recorded = False
+        self._show_stats = False
         self.reset()
         self.state = GameState.START
+
+        # Phase 12 — Menus, Settings & HUD
+        self.menu_selection = 0
+        self._menu_count = 0
+        self.fade_alpha = 0
+        self.fade_target = 0
+        self._transition_target = None
+        self._transition_reset = False
+        self._transitioning = False
+        self.score_pop_timer = 0
+        self._prev_score = 0
+        self.score_count_up = 0
+        self.score_count_up_timer = 0
+        self.new_record_bounce_timer = 0
+        self._settings_previous_state = None
+        self._countup_started = False
+        self._last_mouse_pos = (0, 0)
+        self.settings = {
+            'music_volume': MUSIC_VOLUME,
+            'sfx_volume': SFX_VOLUME,
+            'ambience_volume': AMBIENCE_VOLUME,
+            'bloom': POST_BLOOM_ENABLED,
+            'tone_map': POST_TONE_MAP_ENABLED,
+            'god_rays': POST_GOD_RAYS_ENABLED,
+            'vignette': POST_VIGNETTE_ENABLED,
+            'film_grain': POST_FILM_GRAIN_ENABLED,
+            'show_fps': False,
+        }
+        saved_settings = self.persistence.get_settings()
+        if saved_settings:
+            for k, v in saved_settings.items():
+                if k in self.settings:
+                    self.settings[k] = v
+            self.audio.music_volume = self.settings['music_volume']
+            self.audio.sfx_volume = self.settings['sfx_volume']
+            self.audio.ambience_volume = self.settings['ambience_volume']
 
     def __getattr__(self, name):
         try:
@@ -100,18 +203,19 @@ class SnakeGame:
             sx, sy, _ = self.camera.project(ax, ay, 0.5)
             ar = int(HEX_SIZE * 1.2)
             rects.append(pygame.Rect(sx + shake_x - ar, sy + shake_y - ar, ar * 2, ar * 2))
-        for idx in range(len(self.snake)):
-            q, r = self.snake[idx]
-            if self.prev_snake_positions and idx < len(self.prev_snake_positions):
-                prev_q, prev_r = self.prev_snake_positions[idx]
-                lerp_q = prev_q + (q - prev_q) * self.move_lerp
-                lerp_r = prev_r + (r - prev_r) * self.move_lerp
-            else:
-                lerp_q, lerp_r = q, r
-            cx, cy = hex_to_pixel(lerp_q, lerp_r)
-            sx, sy, _ = self.camera.project(cx, cy, 2)
-            sr = int(HEX_SIZE * 0.6)
-            rects.append(pygame.Rect(sx + shake_x - sr, sy + shake_y - sr, sr * 2, sr * 2))
+        positions = getattr(self, '_spline_positions', None)
+        if positions and len(positions) == len(self.snake):
+            for px, py, _, _ in positions:
+                sx, sy, _ = self.camera.project(px, py, 2)
+                sr = int(HEX_SIZE * 0.6)
+                rects.append(pygame.Rect(sx + shake_x - sr, sy + shake_y - sr, sr * 2, sr * 2))
+        else:
+            for idx in range(len(self.snake)):
+                q, r = self.snake[idx]
+                cx, cy = hex_to_pixel(q, r)
+                sx, sy, _ = self.camera.project(cx, cy, 2)
+                sr = int(HEX_SIZE * 0.6)
+                rects.append(pygame.Rect(sx + shake_x - sr, sy + shake_y - sr, sr * 2, sr * 2))
         for p in self.particles.alive:
             sx, sy, _ = self.camera.project(p.x, p.y, p.z)
             ps = int(p.current_size) + 8
@@ -122,19 +226,18 @@ class SnakeGame:
 
     def _build_ground(self):
         self.ground_cache.fill((0, 0, 0, 0))
-        for q, r in all_hexes():
-            cx, cy = hex_to_pixel(q, r)
-            corners = hex_corners(cx, cy)
+        ground_cache = self._ground_static_cache
+        for q, r in self._all_hexes_cache:
+            gs = ground_cache[(q, r)]
             bot_pts = []
-            for cx_c, cy_c in corners:
-                sx_b, sy_b, _ = self.camera.project(cx_c, cy_c, -TILE_HEIGHT - 4)
+            for c_x, c_y, c_z in gs['bot_world']:
+                sx_b, sy_b, _ = self.camera.project(c_x, c_y, c_z)
                 bot_pts.append((sx_b, sy_b))
-            dist = (q * q + r * r + q * r) ** 0.5 / GRID_RADIUS
-            ground_c = lerp_color(GROUND_LOW, GROUND_DEEP, dist)
-            pygame.draw.polygon(self.ground_cache, ground_c, bot_pts)
+            pygame.draw.polygon(self.ground_cache, gs['color'], bot_pts)
 
     def _build_tile_cache(self):
-        self._build_ground()
+        if self._tile_cache_valid and not self._full_redraw_requested:
+            return
         if self.gl_renderer.available:
             self._tile_cache.fill((0, 0, 0, 0))
             self.gl_renderer.render_tiles_to_fbo(self, self.gl_renderer.fbo_tile)
@@ -155,9 +258,10 @@ class SnakeGame:
                 arr[pi + 3] = int(a * 255.0)
             surf = pygame.image.frombuffer(bytes(arr), (WIDTH, HEIGHT), 'RGBA')
             self._tile_cache.blit(surf, (0, 0))
-            time_float = self.frame_count / 60.0
-            for q, r in all_hexes():
-                cx, cy = hex_to_pixel(q, r)
+            time_float = self.render_time
+            tile_cache = self._tile_static_cache
+            for q, r in self._all_hexes_cache:
+                cx, cy = tile_cache[(q, r)]['center_world']
                 sx, sy, depth = self.camera.project(cx, cy, 0)
                 if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
                     continue
@@ -165,13 +269,16 @@ class SnakeGame:
                     continue
                 self._draw_tile_decorations(self._tile_cache, q, r, time_float)
             self._tile_cache_valid = True
+            self._full_redraw_requested = False
             return
 
         self._tile_cache.fill((0, 0, 0, 0))
-        time_float = self.frame_count / 60.0
+        time_float = self.render_time
+        tile_cache = self._tile_static_cache
+        all_hex = self._all_hexes_cache
         tile_items = []
-        for q, r in all_hexes():
-            cx, cy = hex_to_pixel(q, r)
+        for q, r in all_hex:
+            cx, cy = tile_cache[(q, r)]['center_world']
             sx, sy, depth = self.camera.project(cx, cy, 0)
             if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
                 continue
@@ -182,53 +289,43 @@ class SnakeGame:
         for _, q, r in tile_items:
             self.draw_tile(self._tile_cache, q, r, time_float)
         self._tile_cache_valid = True
+        self._full_redraw_requested = False
 
     def _draw_tile_decorations(self, surf, q, r, time_float):
-        cx, cy = hex_to_pixel(q, r)
-        corners = hex_corners(cx, cy)
+        static = self._tile_static_cache[(q, r)]
+        corners_world = static['corners_world']
+        cx, cy = static['center_world']
+        base_top_color_tuple = static['base_top_color']
+        tex_variation = static['tex_variation']
+        dist_factor = static['dist_factor']
+        grass_seed = static['grass_seed']
+        grass_blades = static['grass_blades']
+        dist_from_center = static['dist_from_center']
+
         top_pts = []
-        for corner_x, corner_y in corners:
-            sx_t, sy_t, _ = self.camera.project(corner_x, corner_y, 0)
+        for c_x, c_y in corners_world:
+            sx_t, sy_t, _ = self.camera.project(c_x, c_y, 0)
             top_pts.append((sx_t, sy_t))
         cx_proj = sum(p[0] for p in top_pts) / 6
         cy_proj = sum(p[1] for p in top_pts) / 6
 
-        noise = tile_noise(q, r)
-        noise_val = noise['detail'] * 0.15
-        dist_from_center = (q * q + r * r + q * r) ** 0.5 / GRID_RADIUS
-        dist_factor = max(0, 1 - dist_from_center * 0.3)
         sun_factor = 0.85 + 0.15 * math.sin(time_float * SUN_ANGLE_SPEED + q * 0.5 + r * 0.3)
         ao = self._tile_ao_cache.get((q, r), 0.9)
+        if (q, r) in self._snake_set:
+            ao *= (1.0 - AO_TILE_OCCUPIED)
 
         edge_color = TILE_EDGE
+        emissive_edge = 0
         if self.state == GameState.GAME_OVER:
             edge_color = (30, 15, 18)
         elif self.eat_flash > 0:
-            flash = min(1.0, self.eat_flash / 12)
+            flash = min(1.0, self.eat_flash / 0.2)
             edge_color = lerp_color(TILE_EDGE, TILE_GLOW, flash)
+            emissive_edge = flash
 
-        mat_noise = noise['base']
-        if mat_noise > 0.4:
-            base_top_color = list(TILE_DIRT)
-        elif mat_noise < -0.3:
-            base_top_color = [60, 110, 80]
-        else:
-            base_top_color = list(TILE_TOP)
+        base_top_color = list(base_top_color_tuple)
 
-        moss_noise = noise['moss']
-        if moss_noise > 0.15:
-            moss_t = min(1.0, (moss_noise - 0.15) * 3)
-            base_top_color = list(lerp_color(tuple(base_top_color), TILE_MOSS, moss_t * 0.35))
-        dirt_noise = noise['dirt']
-        if dirt_noise > 0.2:
-            dirt_t = min(1.0, (dirt_noise - 0.2) * 2.5)
-            base_top_color[0] = min(255, int(base_top_color[0] + (TILE_DIRT[0] - base_top_color[0]) * dirt_t * 0.25))
-            base_top_color[1] = min(255, int(base_top_color[1] + (TILE_DIRT[1] - base_top_color[1]) * dirt_t * 0.25))
-            base_top_color[2] = min(255, int(base_top_color[2] + (TILE_DIRT[2] - base_top_color[2]) * dirt_t * 0.25))
-        noise_offset = int(noise_val * 20)
-        for i in range(3):
-            base_top_color[i] = max(0, min(255, base_top_color[i] + noise_offset))
-        if (q, r) in set(self.snake):
+        if (q, r) in self._snake_set:
             worn = 0.15
             base_top_color = list(lerp_color(tuple(base_top_color), TILE_TOP_LIGHT, worn))
 
@@ -236,22 +333,22 @@ class SnakeGame:
         _, _, depth = self.camera.project(cx, cy, 0)
         fog_t = max(0, min(1, (depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
         if fog_t > 0:
-            final_tri_color = lerp_color(tuple(final_tri_color), FOG_COLOR, fog_t * 0.35)
-        tex_variation = 1.0 + 0.06 * noise['tex']
+            final_tri_color = lerp_color(tuple(final_tri_color), self._fog_tint, fog_t * 0.35)
         final_tri_color = mul_color(tuple(final_tri_color), tex_variation)
 
         pygame.draw.polygon(surf, edge_color, top_pts, max(1, int(1 + sun_factor * 0.5)))
 
         bevel_n = (0.0, 0.0, 1.0)
-        bevel_light = AMBIENT_LIGHT + (1.0 - AMBIENT_LIGHT) * max(0.0, dot3(bevel_n, LIGHT_DIR))
+        bevel_light = self._ambient + (1.0 - self._ambient) * max(0.0, dot3(bevel_n, self._light_dir))
         bevel_brightness = bevel_light * sun_factor * ao
         inner_hl = mul_color(TILE_EDGE_HIGHLIGHT, 0.2 * bevel_brightness)
+        if emissive_edge > 0:
+            inner_hl = add_color(inner_hl, mul_color(TILE_EDGE_EMISSIVE, emissive_edge * 0.5))
         for i in range(6):
             j = (i + 1) % 6
             pygame.draw.line(surf, inner_hl, top_pts[i], top_pts[j], 2)
 
-        crack_noise = noise['crack']
-        crack_intensity = abs(crack_noise) ** 3 * 0.3
+        crack_intensity = abs(static.get('noise', {}).get('crack', 0)) ** 3 * 0.3
         if crack_intensity > 0.05:
             crack_color = mul_color(final_tri_color, 0.7)
             for _ in range(int(crack_intensity * 3)):
@@ -272,28 +369,34 @@ class SnakeGame:
             if el > 0:
                 edge_nx /= el
                 edge_ny /= el
-                rim = max(0.0, edge_nx * LIGHT_DIR[0] + edge_ny * LIGHT_DIR[1])
+                rim = max(0.0, edge_nx * self._light_dir[0] + edge_ny * self._light_dir[1])
                 if rim > 0.3:
                     pygame.draw.line(surf, rim_light, top_pts[i], top_pts[j], 1)
 
-        grass_seed = noise['grass']
         if grass_seed > 0.1 and self.state != GameState.GAME_OVER:
-            blade_count = int((grass_seed - 0.1) * 7)
-            for bi in range(blade_count):
-                a = grass_seed * 6.28 + bi * 1.7 + q * 0.3
-                d = 0.25 + (hash((q, r, bi)) % 100) / 250.0
-                bx = cx + math.cos(a) * d * HEX_SIZE
-                by = cy + math.sin(a) * d * HEX_SIZE
-                blade_h = 3 + (hash((q, r, bi + 100)) % 30) / 15.0
-                blade_w = max(1, int(1 + (hash((q, r, bi + 200)) % 3)))
+            for blade in grass_blades:
+                bx, by = blade['bx'], blade['by']
+                blade_h, blade_w = blade['blade_h'], blade['blade_w']
+                gc = blade['gc']
                 sway = math.sin(time_float * 1.8 + bx * 0.4 + by * 0.3) * 2
                 sx_b, sy_b, _ = self.camera.project(bx, by, 0)
                 sx_t, sy_t, _ = self.camera.project(bx + sway, by, blade_h)
-                gc = lerp_color((35, 115, 50), (55, 160, 70), 0.3 + (hash((q, r, bi + 300)) % 100) / 200.0)
                 pygame.draw.line(surf, gc, (int(sx_b), int(sy_b)), (int(sx_t), int(sy_t)), blade_w)
-                if hash((q, r, bi + 400)) % 5 == 0:
-                    fc = [(255, 200, 80), (240, 130, 150), (200, 140, 255)][hash((q, r, bi + 500)) % 3]
-                    pygame.draw.circle(surf, fc, (int(sx_t), int(sy_t)), max(1, blade_w + 1))
+                if blade['has_flower']:
+                    pygame.draw.circle(surf, blade['flower_color'], (int(sx_t), int(sy_t)), max(1, blade_w + 1))
+
+        if dist_from_center > 0.7:
+            rock_noise = static.get('noise', {}).get('detail', 0)
+            if abs(rock_noise) > 0.2:
+                rock_count = int(abs(rock_noise) * 3)
+                for ri in range(rock_count):
+                    ra = random.uniform(0, math.tau)
+                    rd = random.uniform(0.3, 1.0) * HEX_SIZE
+                    rx = cx_proj + math.cos(ra) * rd
+                    ry = cy_proj + math.sin(ra) * rd
+                    rs = random.randint(1, 3)
+                    rc = mul_color(final_tri_color, random.uniform(0.6, 0.9))
+                    pygame.draw.circle(surf, rc, (int(rx), int(ry)), rs)
 
     def reset(self):
         self.snake = [(0, 0), (-1, 0), (-2, 0)]
@@ -301,29 +404,99 @@ class SnakeGame:
         self.next_direction = 0
         self.apple = self._find_empty()
         self.score = 0
+        self._prev_score = 0
         self.high_score = getattr(self, 'high_score', 0)
+        self._game_start_time = time.time()
+        self._apples_eaten_this_game = 0
+        self._max_snake_len_this_game = len(self.snake)
+        self._game_recorded = False
+        self._show_stats = False
         self.state = GameState.PLAYING
         self.particles.clear()
-        self.eat_flash = 0
-        self.screen_shake = 0
+        self.eat_flash = 0.0
+        self.screen_shake = 0.0
         self.move_timer = 0
         self.move_lerp = 0
         self.smooth_positions = {}
         self.prev_snake_positions = {}
+        self.path_history.clear()
+        for sq, sr in self.snake:
+            self.path_history.append((sq, sr))
+        self.eat_anim = {'timer': 0, 'bulge_idx': -1, 'bulge_progress': 0}
+        self.death_anim = {'timer': 0, 'phase': 'none'}
+        self.apple_anim = {'spawn_timer': 0, 'was_spawned': False}
+        self.blink_timer = random.uniform(2, 5)
+        self._countup_started = False
+        self.score_count_up_timer = 0
+        self.score_count_up = 0
+        self.new_record_bounce_timer = 0
         self.camera.snap_to(*self.snake[0], self.direction)
+        self.audio.resume()
+
+    def _spawn_bird(self):
+        side = random.choice(['left', 'right', 'top'])
+        if side == 'left':
+            x, y = -40, random.uniform(20, HEIGHT * 0.35)
+            vx, vy = random.uniform(0.6, 1.8), random.uniform(-0.15, 0.15)
+        elif side == 'right':
+            x, y = WIDTH + 40, random.uniform(20, HEIGHT * 0.35)
+            vx, vy = random.uniform(-1.8, -0.6), random.uniform(-0.15, 0.15)
+        else:
+            x, y = random.uniform(0, WIDTH), -30
+            vx, vy = random.uniform(-0.3, 0.3), random.uniform(0.4, 1.0)
+        self.birds.append({
+            'x': x, 'y': y, 'vx': vx, 'vy': vy,
+            'size': random.uniform(6, 14),
+            'phase': random.uniform(0, math.tau * 2),
+            'flap_speed': random.uniform(4, 8),
+        })
+
+    def _update_birds(self, dt):
+        for b in list(self.birds):
+            b['x'] += b['vx'] * dt * 60
+            b['y'] += b['vy'] * dt * 60
+            if (b['x'] < -80 or b['x'] > WIDTH + 80 or b['y'] < -60 or b['y'] > HEIGHT * 0.4 + 60):
+                self.birds.remove(b)
+        while len(self.birds) < AMBIENT_BIRD_COUNT:
+            self._spawn_bird()
+
+    def _draw_birds(self, surf, time_float):
+        for b in self.birds:
+            wing_angle = math.sin(time_float * b['flap_speed'] + b['phase']) * 0.4
+            s = b['size']
+            bx, by = b['x'], b['y']
+            c = (20, 25, 40, 120)
+            pygame.draw.polygon(surf, c, [
+                (bx, by),
+                (bx - s * 0.5, by + s * 0.4 + wing_angle * s * 0.3),
+                (bx - s * 0.15, by + s * 0.1),
+            ])
+            pygame.draw.polygon(surf, c, [
+                (bx, by),
+                (bx + s * 0.5, by + s * 0.4 + wing_angle * s * 0.3),
+                (bx + s * 0.15, by + s * 0.1),
+            ])
 
     def _find_empty(self):
-        empty = [(q, r) for q, r in all_hexes() if (q, r) not in self.snake]
+        empty = [(q, r) for q, r in all_hexes()
+                 if in_bounds(q, r) and (q, r) not in self.snake]
         return random.choice(empty) if empty else None
 
     def head(self):
         return self.snake[0]
 
+    @property
+    def _speed_ratio(self):
+        interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
+        return max(0.0, min(1.0, (BASE_MOVE_INTERVAL - interval) / (BASE_MOVE_INTERVAL - MIN_MOVE_INTERVAL)))
+
     def turn_left(self):
         self.next_direction = (self.direction - 1) % 6
+        self.audio.play_slither(self._speed_ratio)
 
     def turn_right(self):
         self.next_direction = (self.direction + 1) % 6
+        self.audio.play_slither(self._speed_ratio)
 
     def next_head_pos(self):
         q, r = self.snake[0]
@@ -331,167 +504,494 @@ class SnakeGame:
         return (q + dq, r + dr)
 
     def move_snake(self):
+        old_dir = self.direction
         self.direction = self.next_direction
-        new_head = wrap_coords(*self.next_head_pos())
+        q, r = self.next_head_pos()
+        wrapped_q, wrapped_r = wrap_coords(q, r)
+        wrapped = (q != wrapped_q) or (r != wrapped_r)
+        new_head = (wrapped_q, wrapped_r)
         if new_head in self.snake[1:]:
             return False
+
         self.prev_snake_positions = list(self.snake)
         ate = new_head == self.apple
         if ate:
             old_apple = self.apple
+
+        if wrapped:
+            self.path_history.clear()
+            for sq, sr in self.snake:
+                self.path_history.append((sq, sr))
+
         self.snake.insert(0, new_head)
+        if len(self.snake) > self._max_snake_len_this_game:
+            self._max_snake_len_this_game = len(self.snake)
+        self.path_history.appendleft(new_head)
+
+        # Direction change detection for banking & dust
+        dir_changed = old_dir != self.direction
+        if dir_changed:
+            hx, hy = hex_to_pixel(new_head[0], new_head[1])
+            ddx, ddy = DIR_VECTORS[self.direction]
+            self.particles.emit_movement_dust(hx, hy, 0.5, -ddx, -ddy)
+            turn_dir = 1 if (self.direction - old_dir) % 6 == 1 else -1
+            self.camera.on_turn(turn_dir)
+
         if ate:
             self.score += 10
+            self._apples_eaten_this_game += 1
+            self.audio.play_eat()
+            if self.score % 50 == 0:
+                self.audio.play_score_chime()
             self.apple = self._find_empty()
             self._spawn_eat_particles(old_apple)
-            self.eat_flash = 12
+            self.eat_flash = 0.2
             self.move_timer = 0
+            self.eat_anim = {'timer': EAT_BULGE_DURATION, 'bulge_idx': 0, 'bulge_progress': 0}
+            self.apple_anim = {'spawn_timer': APPLE_SPAWN_SCALE_TIME, 'was_spawned': True}
+            self.camera.eat_punch()
         else:
             self.snake.pop()
+
         self._tile_cache_valid = False
         self._request_full_redraw()
         return True
+
+    def initiate_death(self):
+        self.death_anim = {'timer': DEATH_ANIM_DURATION, 'phase': 'recoil'}
+        self.audio.play_death()
+        self.screen_shake = 0.25
+        hx, hy = hex_to_pixel(*self.snake[0])
+        self.particles.emit_death_burst(hx, hy, 2)
+        self.camera.death_pullout()
+        self.grade_death_darken = 0.5
+        self._tile_cache_valid = False
+        self._request_full_redraw()
 
     def _spawn_eat_particles(self, pos=None):
         if pos is None:
             pos = self.apple or self.snake[0]
         cx, cy = hex_to_pixel(*pos)
-        for _ in range(20):
-            angle = random.uniform(0, math.tau)
-            speed = random.uniform(2, 6)
-            vx = math.cos(angle) * speed
-            vy = math.sin(angle) * speed * 0.6
-            vz = random.uniform(2, 5)
-            color = random.choice(PARTICLE_COLORS)
-            size = random.uniform(2, 4)
-            lifetime = random.uniform(0.6, 1.8)
-            ox = random.uniform(-4, 4)
-            oy = random.uniform(-4, 4)
-            self.particles.emit(cx + ox, cy + oy, 3, vx, vy, vz, color, size, lifetime, 'glow')
-        for _ in range(10):
-            angle = random.uniform(0, math.tau)
-            speed = random.uniform(4, 8)
-            vx = math.cos(angle) * speed
-            vy = math.sin(angle) * speed * 0.5
-            vz = random.uniform(3, 6)
-            self.particles.emit(cx, cy, 3, vx, vy, vz, (255, 255, 200), random.uniform(1, 2), random.uniform(0.3, 0.8), 'spark')
+        self.particles.emit_apple_burst(cx, cy, 3)
+
+    def _start_transition(self, target_state, reset=False):
+        self._transitioning = True
+        self.fade_target = 255
+        self._transition_target = target_state
+        self._transition_reset = reset
+        self.menu_selection = 0
+
+    def _handle_menu_mouse(self, pos):
+        rects = self._get_menu_rects()
+        for i, rect in enumerate(rects):
+            if rect.collidepoint(pos):
+                self.menu_selection = i
+                break
+
+    def _handle_menu_click(self):
+        rects = self._get_menu_rects()
+        for i, rect in enumerate(rects):
+            if rect.collidepoint(self._last_mouse_pos):
+                self.menu_selection = i
+                self._activate_menu_item()
+                break
+
+    def _get_menu_rects(self):
+        rects = []
+        if self.state == GameState.START:
+            for i in range(self._menu_count):
+                y = 240 + i * 50
+                rects.append(pygame.Rect(WIDTH // 2 - 70, y - 14, 140, 32))
+        elif self.state == GameState.PAUSED:
+            py = (HEIGHT - 260) // 2
+            for i in range(self._menu_count):
+                y = py + 100 + i * 40
+                rects.append(pygame.Rect(WIDTH // 2 - 70, y - 10, 140, 28))
+        elif self.state == GameState.SETTINGS:
+            px = (WIDTH - 500) // 2
+            py = (HEIGHT - 520) // 2
+            for i in range(self._menu_count):
+                y = py + 65 + i * 38
+                rects.append(pygame.Rect(px + 30, y - 10, 400, 28))
+        elif self.state == GameState.GAME_OVER:
+            if self.score_count_up >= self.score or self.score == 0:
+                py = (HEIGHT - 320) // 2
+                for i in range(self._menu_count):
+                    y = py + 185 + i * 40
+                    rects.append(pygame.Rect(WIDTH // 2 - 70, y - 10, 140, 28))
+        return rects
+
+    def _activate_menu_item(self):
+        if self.state == GameState.START:
+            if self.menu_selection == 0:
+                self._start_transition(GameState.PLAYING, reset=True)
+            elif self.menu_selection == 1:
+                self._settings_previous_state = GameState.START
+                self._start_transition(GameState.SETTINGS)
+            elif self.menu_selection == 2:
+                self.quit()
+        elif self.state == GameState.PAUSED:
+            if self.menu_selection == 0:
+                self.state = GameState.PLAYING
+                self.grade_cool_shift = 0
+                self.audio.resume()
+            elif self.menu_selection == 1:
+                self._settings_previous_state = GameState.PAUSED
+                self._start_transition(GameState.SETTINGS)
+            elif self.menu_selection == 2:
+                self._start_transition(GameState.PLAYING, reset=True)
+            elif self.menu_selection == 3:
+                self._start_transition(GameState.START)
+        elif self.state == GameState.GAME_OVER:
+            if self.menu_selection == 0:
+                self._start_transition(GameState.PLAYING, reset=True)
+            elif self.menu_selection == 1:
+                self._show_stats = not self._show_stats
+            elif self.menu_selection == 2:
+                self._start_transition(GameState.START)
+        elif self.state == GameState.SETTINGS:
+            if self.menu_selection == 9:
+                self._settings_back()
+
+    def _adjust_setting(self, direction):
+        if self.menu_selection == 0:
+            v = self.settings['music_volume'] + direction * 0.1
+            self.settings['music_volume'] = max(0.0, min(1.0, round(v, 1)))
+            self.audio.music_volume = self.settings['music_volume']
+        elif self.menu_selection == 1:
+            v = self.settings['sfx_volume'] + direction * 0.1
+            self.settings['sfx_volume'] = max(0.0, min(1.0, round(v, 1)))
+            self.audio.sfx_volume = self.settings['sfx_volume']
+        elif self.menu_selection == 2:
+            v = self.settings['ambience_volume'] + direction * 0.1
+            self.settings['ambience_volume'] = max(0.0, min(1.0, round(v, 1)))
+            self.audio.ambience_volume = self.settings['ambience_volume']
+        elif self.menu_selection == 9:
+            self._settings_back()
+        self.persistence.set_settings(self.settings)
+        self.persistence.save()
+
+    def _toggle_setting(self):
+        key_map = {
+            3: 'bloom', 4: 'tone_map', 5: 'god_rays',
+            6: 'vignette', 7: 'film_grain', 8: 'show_fps',
+        }
+        if self.menu_selection in key_map:
+            key = key_map[self.menu_selection]
+            self.settings[key] = not self.settings[key]
+            self.persistence.set_settings(self.settings)
+            self.persistence.save()
+        elif self.menu_selection == 9:
+            self._settings_back()
+
+    def _settings_back(self):
+        prev = self._settings_previous_state or GameState.START
+        self._start_transition(prev)
 
     def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.quit()
+
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+                if event.key == pygame.K_ESCAPE and self.state == GameState.START:
                     self.quit()
-                elif self.state == GameState.PLAYING:
+                elif event.key == pygame.K_ESCAPE and self.state == GameState.GAME_OVER:
+                    if self._show_stats:
+                        self._show_stats = False
+                    elif self.score_count_up >= self.score or self.score == 0:
+                        self._start_transition(GameState.START)
+                elif event.key == pygame.K_ESCAPE and self.state == GameState.PLAYING:
+                    self._start_transition(GameState.START)
+                elif event.key == pygame.K_F1:
+                    self._debug_overlay = not self._debug_overlay
+                elif event.key == pygame.K_F12:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    pygame.image.save(self.screen, f'screenshot_{ts}.png')
+                elif event.key == pygame.K_m:
+                    self.audio.toggle_mute()
+
+            if self._transitioning:
+                continue
+
+            if event.type == pygame.MOUSEMOTION:
+                self._last_mouse_pos = event.pos
+
+            if self.state == GameState.START:
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_UP, pygame.K_w):
+                        self.menu_selection = (self.menu_selection - 1) % max(1, self._menu_count)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        self.menu_selection = (self.menu_selection + 1) % max(1, self._menu_count)
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self._activate_menu_item()
+                elif event.type == pygame.MOUSEMOTION:
+                    self._handle_menu_mouse(event.pos)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self._handle_menu_click()
+
+            elif self.state == GameState.SETTINGS:
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_UP, pygame.K_w):
+                        self.menu_selection = (self.menu_selection - 1) % max(1, self._menu_count)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        self.menu_selection = (self.menu_selection + 1) % max(1, self._menu_count)
+                    elif event.key in (pygame.K_LEFT, pygame.K_a):
+                        self._adjust_setting(-1)
+                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                        self._adjust_setting(1)
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self._toggle_setting()
+                    elif event.key == pygame.K_ESCAPE:
+                        self._settings_back()
+                elif event.type == pygame.MOUSEMOTION:
+                    self._handle_menu_mouse(event.pos)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self._handle_menu_click()
+
+            elif self.state == GameState.PLAYING:
+                if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
                         self.state = GameState.PAUSED
+                        self.grade_cool_shift = 0.3
+                        self.audio.pause()
+                        self.menu_selection = 0
                     elif event.key in (pygame.K_a, pygame.K_LEFT):
                         self.turn_left()
                     elif event.key in (pygame.K_d, pygame.K_RIGHT):
                         self.turn_right()
-                elif self.state == GameState.PAUSED:
-                    if event.key == pygame.K_SPACE:
+                    elif event.key == pygame.K_ESCAPE:
+                        self._start_transition(GameState.START)
+
+            elif self.state == GameState.PAUSED:
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_UP, pygame.K_w):
+                        self.menu_selection = (self.menu_selection - 1) % max(1, self._menu_count)
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        self.menu_selection = (self.menu_selection + 1) % max(1, self._menu_count)
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        self._activate_menu_item()
+                    elif event.key == pygame.K_ESCAPE:
                         self.state = GameState.PLAYING
-                elif self.state == GameState.GAME_OVER:
-                    if event.key == pygame.K_r or event.key == pygame.K_RETURN:
-                        self.reset()
+                        self.grade_cool_shift = 0
+                        self.audio.resume()
+                elif event.type == pygame.MOUSEMOTION:
+                    self._handle_menu_mouse(event.pos)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    self._handle_menu_click()
+
+            elif self.state == GameState.GAME_OVER:
+                if event.type == pygame.KEYDOWN:
+                    if self._show_stats:
+                        if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_ESCAPE):
+                            self._show_stats = False
+                        continue
+                    score_done = self.score_count_up >= self.score or self.score == 0
+                    if not score_done:
+                        if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_r):
+                            self.score_count_up = self.score
+                            self.score_count_up_timer = 0
+                    else:
+                        if event.key in (pygame.K_UP, pygame.K_w):
+                            self.menu_selection = (self.menu_selection - 1) % max(1, self._menu_count)
+                        elif event.key in (pygame.K_DOWN, pygame.K_s):
+                            self.menu_selection = (self.menu_selection + 1) % max(1, self._menu_count)
+                        elif event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_r):
+                            self._activate_menu_item()
+                elif event.type == pygame.MOUSEMOTION:
+                    if not self._show_stats:
+                        self._handle_menu_mouse(event.pos)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if self._show_stats:
+                        self._show_stats = False
+                    else:
+                        self._handle_menu_click()
+
+    def _update_transition(self, dt):
+        if self.fade_alpha != self.fade_target:
+            rate = MENU_FADE_SPEED * 255 * dt * 60
+            if self.fade_target > self.fade_alpha:
+                self.fade_alpha = min(self.fade_target, self.fade_alpha + rate)
+            else:
+                self.fade_alpha = max(self.fade_target, self.fade_alpha - rate)
+            if abs(self.fade_alpha - self.fade_target) < 2:
+                self.fade_alpha = self.fade_target
+            if self.fade_alpha >= 255 and self._transition_target is not None:
+                target = self._transition_target
+                do_reset = self._transition_reset
+                self._transition_target = None
+                self._transition_reset = False
+                if do_reset:
+                    self.reset()
+                else:
+                    self.state = target
+                    if target == GameState.PLAYING:
+                        self.grade_cool_shift = 0
+                        self.audio.resume()
+                    elif target == GameState.SETTINGS:
+                        self.menu_selection = 0
+                self.fade_target = 0
+            if self.fade_alpha <= 0 and not self._transition_target:
+                self._transitioning = False
 
     def update(self, dt):
-        self.frame_count += 1
+        """Fixed-timestep simulation update (dt is always FIXED_DT)."""
         self.ambient_time += dt
-        self.update_ambient_particles()
+        self._update_transition(dt)
+
+        if self.state in (GameState.START, GameState.SETTINGS):
+            self._update_birds(dt * 60)
+            if self.state == GameState.START:
+                self.ambient_time += dt * 0.3
+            day_cycle = math.sin(self.ambient_time * SUN_ANGLE_SPEED)
+            self.audio.update(day_cycle, 0.0, dt)
+            return
+
+        self.update_ambient_particles(dt)
+
+        day_cycle = math.sin(self.ambient_time * SUN_ANGLE_SPEED)
 
         if self.state == GameState.PLAYING:
-            self.move_timer += dt
-            interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
-            self.move_lerp = min(1.0, self.move_timer / interval)
-
-            while self.move_timer >= interval:
-                self.move_timer -= interval
-                self.move_lerp = 0
-                if not self.move_snake():
+            if self._transitioning:
+                pass
+            elif self.death_anim['phase'] != 'none':
+                self.death_anim['timer'] -= dt
+                if self.death_anim['timer'] <= 0:
+                    if not self._game_recorded:
+                        duration = time.time() - self._game_start_time
+                        self.persistence.record_game(
+                            self.score,
+                            self._apples_eaten_this_game,
+                            duration,
+                            self._max_snake_len_this_game,
+                        )
+                        self.persistence.save()
+                        self._game_recorded = True
                     self.state = GameState.GAME_OVER
-                    self.screen_shake = 15
-                    self._spawn_eat_particles(self.snake[0])
-                    self._tile_cache_valid = False
-                    self._request_full_redraw()
-                    break
+            else:
+                self.move_timer += dt
+                interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
 
-        self.camera.follow_snake(*self.snake[0], self.direction)
+                while self.move_timer >= interval:
+                    self.move_timer -= interval
+                    if not self.move_snake():
+                        self.initiate_death()
+                        break
+
+        # Eat anim: bulge travels down the body
+        if self.eat_anim['timer'] > 0:
+            self.eat_anim['timer'] -= dt
+            progress = 1.0 - max(0, self.eat_anim['timer']) / EAT_BULGE_DURATION
+            self.eat_anim['bulge_progress'] = progress
+            self.eat_anim['bulge_idx'] = min(len(self.snake) - 1, int(progress * len(self.snake)))
+
+        # Apple spawn anim
+        if self.apple_anim['spawn_timer'] > 0:
+            self.apple_anim['spawn_timer'] -= dt
+            if self.apple_anim['spawn_timer'] < 0:
+                self.apple_anim['spawn_timer'] = 0
+
+        # Blink timer
+        self.blink_timer -= dt
+        if self.blink_timer <= 0:
+            self.blink_timer = random.uniform(2, 5)
 
         self.particles.update_all(dt)
         self.particles.clean()
 
         if self.eat_flash > 0:
-            self.eat_flash -= dt * 60
+            self.eat_flash -= dt
+            self.grade_warm_flash = self.eat_flash
+            if self.eat_flash < 0:
+                self.eat_flash = 0
+                self.grade_warm_flash = 0
             self._tile_cache_valid = False
             self._request_full_redraw()
 
         if self.screen_shake > 0:
-            self.screen_shake -= dt * 60
+            self.screen_shake -= dt
+            if self.screen_shake < 0:
+                self.screen_shake = 0
+
+        if self.grade_death_darken > 0:
+            self.grade_death_darken = max(0, self.grade_death_darken - dt)
+
+        if self.grade_cool_shift > 0:
+            self.grade_cool_shift = max(0, self.grade_cool_shift - dt * 0.5)
+
+        self._update_birds(dt * 60)
 
         if self.score > self.high_score:
             self.high_score = self.score
 
+        self.audio.update(day_cycle, self._speed_ratio, dt)
+
+        # Score pop tracking
+        if self.score != self._prev_score:
+            self._prev_score = self.score
+            self.score_pop_timer = SCORE_POP_DURATION
+        if self.score_pop_timer > 0:
+            self.score_pop_timer -= dt
+            if self.score_pop_timer < 0:
+                self.score_pop_timer = 0
+
+    def _update_game_over_countup(self, dt):
+        if self.state == GameState.GAME_OVER:
+            if not self._countup_started:
+                self.score_count_up_timer = 1.5
+                self.score_count_up = 0
+                if self.score >= self.high_score and self.score > 0:
+                    self.new_record_bounce_timer = 2.0
+                else:
+                    self.new_record_bounce_timer = 0
+                self._countup_started = True
+            if self.score_count_up_timer > 0:
+                self.score_count_up_timer -= dt
+                progress = 1.0 - max(0, self.score_count_up_timer) / 1.5
+                self.score_count_up = int(progress * self.score)
+            elif self.score_count_up < self.score:
+                self.score_count_up = self.score
+            if self.new_record_bounce_timer > 0:
+                self.new_record_bounce_timer = max(0, self.new_record_bounce_timer - dt)
+
     def draw_tile(self, surf, q, r, time_float):
-        cx, cy = hex_to_pixel(q, r)
-        corners = hex_corners(cx, cy)
+        static = self._tile_static_cache[(q, r)]
+        corners_world = static['corners_world']
+        cx, cy = static['center_world']
+        base_top_color_tuple = static['base_top_color']
+        base_side_color_tuple = static['base_side_color']
+        tex_variation = static['tex_variation']
+        dist_factor = static['dist_factor']
+        grass_seed = static['grass_seed']
+        grass_blades = static['grass_blades']
 
         top_pts = []
         bot_pts = []
-        for corner_x, corner_y in corners:
-            sx_t, sy_t, _ = self.camera.project(corner_x, corner_y, 0)
-            sx_b, sy_b, _ = self.camera.project(corner_x, corner_y, -TILE_HEIGHT)
+        for c_x, c_y in corners_world:
+            sx_t, sy_t, _ = self.camera.project(c_x, c_y, 0)
+            sx_b, sy_b, _ = self.camera.project(c_x, c_y, -TILE_HEIGHT)
             top_pts.append((sx_t, sy_t))
             bot_pts.append((sx_b, sy_b))
 
         cx_proj = sum(p[0] for p in top_pts) / 6
         cy_proj = sum(p[1] for p in top_pts) / 6
 
-        noise = tile_noise(q, r)
-        noise_val = noise['detail'] * 0.15
-        dist_from_center = (q * q + r * r + q * r) ** 0.5 / GRID_RADIUS
-        dist_factor = max(0, 1 - dist_from_center * 0.3)
         sun_factor = 0.85 + 0.15 * math.sin(time_float * SUN_ANGLE_SPEED + q * 0.5 + r * 0.3)
-
         ao = self._tile_ao_cache.get((q, r), 0.9)
+        if (q, r) in self._snake_set:
+            ao *= (1.0 - AO_TILE_OCCUPIED)
 
         edge_color = TILE_EDGE
         if self.state == GameState.GAME_OVER:
             edge_color = (30, 15, 18)
         elif self.eat_flash > 0:
-            flash = min(1.0, self.eat_flash / 12)
+            flash = min(1.0, self.eat_flash / 0.2)
             edge_color = lerp_color(TILE_EDGE, TILE_GLOW, flash)
 
-        mat_noise = noise['base']
-        if mat_noise > 0.4:
-            base_top_color = list(TILE_DIRT)
-            base_side_color = list(TILE_SIDE_DARK)
-        elif mat_noise < -0.3:
-            base_top_color = list((60, 110, 80))
-            base_side_color = list(TILE_SIDE)
-        else:
-            base_top_color = list(TILE_TOP)
-            base_side_color = list(TILE_SIDE)
+        base_top_color = list(base_top_color_tuple)
+        base_side_color = list(base_side_color_tuple)
 
-        moss_noise = noise['moss']
-        if moss_noise > 0.15:
-            moss_t = min(1.0, (moss_noise - 0.15) * 3)
-            base_top_color = list(lerp_color(tuple(base_top_color), TILE_MOSS, moss_t * 0.35))
-
-        dirt_noise = noise['dirt']
-        if dirt_noise > 0.2:
-            dirt_t = min(1.0, (dirt_noise - 0.2) * 2.5)
-            base_top_color[0] = min(255, int(base_top_color[0] + (TILE_DIRT[0] - base_top_color[0]) * dirt_t * 0.25))
-            base_top_color[1] = min(255, int(base_top_color[1] + (TILE_DIRT[1] - base_top_color[1]) * dirt_t * 0.25))
-            base_top_color[2] = min(255, int(base_top_color[2] + (TILE_DIRT[2] - base_top_color[2]) * dirt_t * 0.25))
-
-        noise_offset = int(noise_val * 20)
-        for i in range(3):
-            base_top_color[i] = max(0, min(255, base_top_color[i] + noise_offset))
-
-        if (q, r) in set(self.snake):
+        if (q, r) in self._snake_set:
             worn = 0.15
             base_top_color = list(lerp_color(tuple(base_top_color), TILE_TOP_LIGHT, worn))
 
@@ -499,18 +999,17 @@ class SnakeGame:
             base_top_color = [10, 25, 20]
             base_side_color = [6, 14, 12]
         elif self.eat_flash > 0:
-            flash = min(1.0, self.eat_flash / 12)
+            flash = min(1.0, self.eat_flash / 0.2)
             base_top_color = list(lerp_color(tuple(base_top_color), mul_color(TILE_GLOW, 0.3), flash * 0.5))
 
         face_normal = (0.0, 0.0, 1.0)
-        diff = max(0.0, dot3(face_normal, LIGHT_DIR))
-        light = (AMBIENT_LIGHT + (1.0 - AMBIENT_LIGHT) * diff) * sun_factor * dist_factor * ao
+        diff = max(0.0, dot3(face_normal, self._light_dir))
+        light = (self._ambient + (1.0 - self._ambient) * diff) * sun_factor * dist_factor * ao
         final_tri_color = mul_color(tuple(base_top_color), light)
         _, _, depth = self.camera.project(cx, cy, 0)
         fog_t = max(0, min(1, (depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
         if fog_t > 0:
-            final_tri_color = lerp_color(tuple(final_tri_color), FOG_COLOR, fog_t * 0.35)
-        tex_variation = 1.0 + 0.06 * noise['tex']
+            final_tri_color = lerp_color(tuple(final_tri_color), self._fog_tint, fog_t * 0.35)
         final_tri_color = mul_color(tuple(final_tri_color), tex_variation)
 
         pygame.draw.polygon(surf, edge_color, top_pts, max(1, int(1 + sun_factor * 0.5)))
@@ -519,13 +1018,13 @@ class SnakeGame:
             j = (i + 1) % 6
             quad = [top_pts[i], top_pts[j], bot_pts[j], bot_pts[i]]
             nx_s, ny_s, nz_s = hex_side_normal(i)
-            diff_side = max(0.0, nx_s * LIGHT_DIR[0] + ny_s * LIGHT_DIR[1] + nz_s * LIGHT_DIR[2])
-            side_light = (AMBIENT_LIGHT + (1.0 - AMBIENT_LIGHT) * diff_side) * sun_factor * dist_factor * ao
+            diff_side = max(0.0, nx_s * self._light_dir[0] + ny_s * self._light_dir[1] + nz_s * self._light_dir[2])
+            side_light = (self._ambient + (1.0 - self._ambient) * diff_side) * sun_factor * dist_factor * ao
 
             side_ao = 1.0 - 0.12 * (1.0 - abs(diff_side))
             side_light *= side_ao
 
-            side_noise_val = noise['detail'] * 0.08
+            side_noise_val = static.get('noise', {}).get('detail', 0) * 0.08
             side_light = max(0.1, side_light + side_noise_val)
 
             sc_top = mul_color(tuple(base_side_color), side_light * 1.1)
@@ -535,15 +1034,14 @@ class SnakeGame:
             pygame.draw.line(surf, edge_highlight, quad[0], quad[1], 1)
 
         bevel_n = (0.0, 0.0, 1.0)
-        bevel_light = AMBIENT_LIGHT + (1.0 - AMBIENT_LIGHT) * max(0.0, dot3(bevel_n, LIGHT_DIR))
+        bevel_light = self._ambient + (1.0 - self._ambient) * max(0.0, dot3(bevel_n, self._light_dir))
         bevel_brightness = bevel_light * sun_factor * ao
         inner_hl = mul_color(TILE_EDGE_HIGHLIGHT, 0.2 * bevel_brightness)
         for i in range(6):
             j = (i + 1) % 6
             pygame.draw.line(surf, inner_hl, top_pts[i], top_pts[j], 2)
 
-        crack_noise = noise['crack']
-        crack_intensity = abs(crack_noise) ** 3 * 0.3
+        crack_intensity = abs(static.get('noise', {}).get('crack', 0)) ** 3 * 0.3
         if crack_intensity > 0.05:
             crack_color = mul_color(final_tri_color, 0.7)
             for _ in range(int(crack_intensity * 3)):
@@ -564,64 +1062,47 @@ class SnakeGame:
             if el > 0:
                 edge_nx /= el
                 edge_ny /= el
-                rim = max(0.0, edge_nx * LIGHT_DIR[0] + edge_ny * LIGHT_DIR[1])
+                rim = max(0.0, edge_nx * self._light_dir[0] + edge_ny * self._light_dir[1])
                 if rim > 0.3:
                     pygame.draw.line(surf, rim_light, top_pts[i], top_pts[j], 1)
 
-        grass_seed = noise['grass']
         if grass_seed > 0.1 and self.state != GameState.GAME_OVER:
-            blade_count = int((grass_seed - 0.1) * 7)
-            for bi in range(blade_count):
-                a = grass_seed * 6.28 + bi * 1.7 + q * 0.3
-                d = 0.25 + (hash((q, r, bi)) % 100) / 250.0
-                bx = cx + math.cos(a) * d * HEX_SIZE
-                by = cy + math.sin(a) * d * HEX_SIZE
-                blade_h = 3 + (hash((q, r, bi + 100)) % 30) / 15.0
-                blade_w = max(1, int(1 + (hash((q, r, bi + 200)) % 3)))
+            for blade in grass_blades:
+                bx, by = blade['bx'], blade['by']
+                blade_h, blade_w = blade['blade_h'], blade['blade_w']
+                gc = blade['gc']
                 sway = math.sin(time_float * 1.8 + bx * 0.4 + by * 0.3) * 2
                 sx_b, sy_b, _ = self.camera.project(bx, by, 0)
                 sx_t, sy_t, _ = self.camera.project(bx + sway, by, blade_h)
-                gc = lerp_color((35, 115, 50), (55, 160, 70), 0.3 + (hash((q, r, bi + 300)) % 100) / 200.0)
                 pygame.draw.line(surf, gc, (int(sx_b), int(sy_b)), (int(sx_t), int(sy_t)), blade_w)
-                if hash((q, r, bi + 400)) % 5 == 0:
-                    fc = [(255, 200, 80), (240, 130, 150), (200, 140, 255)][hash((q, r, bi + 500)) % 3]
-                    pygame.draw.circle(surf, fc, (int(sx_t), int(sy_t)), max(1, blade_w + 1))
+                if blade['has_flower']:
+                    pygame.draw.circle(surf, blade['flower_color'], (int(sx_t), int(sy_t)), max(1, blade_w + 1))
 
-    def draw_shadow(self, surf, cx, cy, z, r, alpha=60):
-        sx, sy, _ = self.camera.project(cx, cy, z)
-        shadow_size = max(2, int(r * 2))
+    def draw_shadow(self, surf, world_x, world_y, height, radius, alpha=None):
+        light_dir = self._light_dir
+        if light_dir[2] <= 0.001:
+            return
+        factor = height / light_dir[2]
+        shadow_x = world_x + light_dir[0] * factor
+        shadow_y = world_y + light_dir[1] * factor
+        shadow_scale = 1.0 + max(0, height) * 0.3
+        shadow_size = max(2, int(radius * 2 * shadow_scale))
+        if alpha is None:
+            alpha = SHADOW_ALPHA * max(0.0, min(1.0, 1.0 - height * 0.02))
+        sx, sy, _ = self.camera.project(shadow_x, shadow_y, 0)
         scaled = pygame.transform.smoothscale(self.soft_shadow_sprite, (shadow_size, shadow_size))
-        scaled.set_alpha(alpha)
+        scaled.set_alpha(int(alpha))
         surf.blit(scaled, (int(sx - shadow_size // 2), int(sy - shadow_size // 2)))
 
     def draw_snake_segment(self, surf, idx, q, r, time_float):
-        if self.prev_snake_positions and idx < len(self.prev_snake_positions):
-            prev_q, prev_r = self.prev_snake_positions[idx]
-            lerp_q = prev_q + (q - prev_q) * self.move_lerp
-            lerp_r = prev_r + (r - prev_r) * self.move_lerp
-        else:
-            lerp_q, lerp_r = q, r
+        if not hasattr(self, '_spline_positions') or not self._spline_positions:
+            return
+        if idx >= len(self._spline_positions):
+            return
 
-        if len(self.snake) >= 4:
-            snake_pos = []
-            for si in range(len(self.snake)):
-                sq, sr = self.snake[si]
-                if self.prev_snake_positions and si < len(self.prev_snake_positions):
-                    psq, psr = self.prev_snake_positions[si]
-                    sq = psq + (sq - psq) * self.move_lerp
-                    sr = psr + (sr - psr) * self.move_lerp
-                snake_pos.append((sq, sr))
+        px, py, tx, ty = self._spline_positions[idx]
+        cx, cy = px, py
 
-            p0 = snake_pos[max(0, idx - 1)]
-            p1 = snake_pos[min(len(snake_pos) - 1, idx)]
-            p2 = snake_pos[min(len(snake_pos) - 1, idx + 1)]
-            p3 = snake_pos[min(len(snake_pos) - 1, idx + 2)]
-            interp_q = catmull_rom(p0[0], p1[0], p2[0], p3[0], 0.5)
-            interp_r = catmull_rom(p0[1], p1[1], p2[1], p3[1], 0.5)
-            lerp_q = lerp_q * 0.5 + interp_q * 0.5
-            lerp_r = lerp_r * 0.5 + interp_r * 0.5
-
-        cx, cy = hex_to_pixel(lerp_q, lerp_r)
         t = idx / max(1, len(self.snake) - 1)
         color_idx = min(len(SNAKE_COLORS) - 1, int(t * len(SNAKE_COLORS)))
 
@@ -630,55 +1111,71 @@ class SnakeGame:
         body_pulse = 1.0 + 0.03 * math.sin(time_float * 2 + idx * 0.5)
         sz = int(HEX_SIZE * 0.40 * thickness_curve * body_pulse * 2)
 
-        sx, sy, depth = self.camera.project(cx, cy, 2)
+        # Eat bulge animation
+        if self.eat_anim['timer'] > 0 and idx == self.eat_anim['bulge_idx']:
+            bulge = 1.0 + 0.4 * math.sin(self.eat_anim['bulge_progress'] * math.pi)
+            sz = int(sz * bulge)
 
-        self.draw_shadow(surf, cx, cy, 0.3, int(sz * 0.5), 50)
+        # Death collapse
+        if self.death_anim['phase'] != 'none':
+            death_t = 1.0 - min(1.0, self.death_anim['timer'] / DEATH_ANIM_DURATION)
+            head_factor = 1.0 - idx / max(1, len(self.snake))
+            collapse = 1.0 - death_t * 0.5 * head_factor
+            sz = max(1, int(sz * collapse))
+
+        # Head squash-stretch on eat
+        if idx == 0 and self.eat_anim['timer'] > EAT_BULGE_DURATION - EAT_SQUASH_DURATION:
+            eat_t = 1.0 - (self.eat_anim['timer'] - (EAT_BULGE_DURATION - EAT_SQUASH_DURATION)) / EAT_SQUASH_DURATION
+            if 0 <= eat_t <= 1:
+                squash = 1.0 + 0.2 * math.sin(eat_t * math.pi)
+                stretch = 1.0 - 0.2 * math.sin(eat_t * math.pi)
+            else:
+                squash = stretch = 1.0
+        else:
+            squash = stretch = 1.0
+
+        sx, sy, depth = self.camera.project(cx, cy, 2)
+        self.draw_shadow(surf, cx, cy, 2, int(sz * 0.5))
 
         if idx == 0:
-            sprite = self._head_sprites.get(sz)
+            sprite_sz = max(int(sz * squash), int(sz * stretch))
+            sprite = self._head_sprites.get(sprite_sz)
             if sprite is None:
-                sprite = pygame.transform.smoothscale(self.master_head_sprite, (sz, sz))
-                self._head_sprites[sz] = sprite
+                sprite = pygame.transform.smoothscale(self.master_head_sprite, (sprite_sz, sprite_sz))
+                self._head_sprites[sprite_sz] = sprite
+            if squash != 1.0 or stretch != 1.0:
+                sprite = pygame.transform.scale(sprite, (int(sz * squash), int(sz * stretch)))
         else:
             sprite = self._body_sprites[color_idx].get(sz)
             if sprite is None:
                 sprite = pygame.transform.smoothscale(self.master_body_sprites[color_idx], (sz, sz))
                 self._body_sprites[color_idx][sz] = sprite
-        surf.blit(sprite, (int(sx - sz // 2), int(sy - sz // 2)))
+        surf.blit(sprite, (int(sx - sz * squash // 2), int(sy - sz * stretch // 2)))
 
-        if idx < len(self.snake) - 1:
-            nq, nr = self.snake[idx + 1]
-            if self.prev_snake_positions and idx + 1 < len(self.prev_snake_positions):
-                npq, npr = self.prev_snake_positions[idx + 1]
-                nq = npq + (nq - npq) * self.move_lerp
-                nr = npr + (nr - npr) * self.move_lerp
-            ncx, ncy = hex_to_pixel(nq, nr)
+        # Connector circles along the spline
+        if idx < len(self.snake) - 1 and idx + 1 < len(self._spline_positions):
+            npx, npy, _, _ = self._spline_positions[idx + 1]
             for frac in [0.25, 0.5, 0.75]:
-                px = cx + (ncx - cx) * frac
-                py = cy + (ncy - cy) * frac
+                p_cx = cx + (npx - cx) * frac
+                p_cy = cy + (npy - cy) * frac
                 z = 1 + TILE_HEIGHT * 0.35
-                sx_j, sy_j, _ = self.camera.project(px, py, z)
+                sx_j, sy_j, _ = self.camera.project(p_cx, p_cy, z)
                 r_conn = max(1.5, sz * 0.35 * (1 - idx * 0.008))
                 base_color = HEAD_COLOR if idx == 0 else SNAKE_COLORS[color_idx]
-                lx, ly, lz = LIGHT_DIR
-                vx, vy, vz = 0.0, 0.0, 1.0
-                diff = max(0.0, vx * lx + vy * ly + vz * lz)
-                light = 0.25 + 0.75 * diff
+                diff = max(0.0, self._light_dir[2])
+                light = self._ambient + (1.0 - self._ambient) * diff
                 c = mul_color(base_color, light * 0.8)
+                c = mul_color(c, 0.5)
+                c = add_color(c, mul_color(self._sun_color, light * 0.5))
                 pygame.draw.circle(surf, c, (int(sx_j), int(sy_j)), int(r_conn))
                 spec = mul_color((255, 255, 255), 0.3 * max(0.0, diff) ** 8)
                 pygame.draw.circle(surf, spec, (int(sx_j - 1), int(sy_j - 1)), max(1, int(r_conn * 0.4)))
 
         if idx == 0:
-            dx, dy = DIR_VECTORS[self.direction]
-            sx_fwd, sy_fwd, _ = self.camera.project(cx + dx * 6, cy + dy * 6, 2 + TILE_HEIGHT * 0.55)
-            es = max(2, int(HEX_SIZE * 0.12))
-            dir_x = sx_fwd - sx
-            dir_y = sy_fwd - sy
-            dir_len = math.hypot(dir_x, dir_y)
-            if dir_len > 0:
-                perp_x = -dir_y / dir_len
-                perp_y = dir_x / dir_len
+            dir_len = math.hypot(tx, ty)
+            if dir_len > 0.001:
+                perp_x = -ty / dir_len
+                perp_y = tx / dir_len
             else:
                 perp_x, perp_y = 0, -1
 
@@ -696,46 +1193,48 @@ class SnakeGame:
             glow_surf.set_alpha(int(head_glow_a * 255 / 50))
             surf.blit(glow_surf, (int(sx - glow_r), int(sy - glow_r)), special_flags=pygame.BLEND_ADD)
 
-            eye_spread = es * 1.8
-            for side in [-1, 1]:
-                ex = int(sx + perp_x * eye_spread * side + dir_x * 0.15)
-                ey = int(sy + perp_y * eye_spread * side + dir_y * 0.15)
-                es_draw = max(1, es)
-                pygame.draw.circle(surf, EYE_WHITE, (ex, ey), es_draw)
+            # Eye blink
+            is_blinking = self.blink_timer <= 0.1
+            if not is_blinking:
+                es = max(2, int(HEX_SIZE * 0.12))
+                eye_spread = es * 1.8
+                for side in [-1, 1]:
+                    ex = int(sx + perp_x * eye_spread * side + tx * sz * 0.15)
+                    ey = int(sy + perp_y * eye_spread * side + ty * sz * 0.15)
+                    es_draw = max(1, es)
+                    pygame.draw.circle(surf, EYE_WHITE, (ex, ey), es_draw)
+                    iris_r = max(1, es - 1)
+                    iris_off_x = int(perp_x * side * es * 0.35)
+                    iris_off_y = int(perp_y * side * es * 0.35)
+                    pygame.draw.circle(surf, EYE_IRIS, (ex + iris_off_x, ey + iris_off_y), iris_r)
+                    pupil_r = max(1, es - 2)
+                    pygame.draw.circle(surf, EYE_PUPIL, (ex + int(perp_x * side * es * 0.35), ey + int(perp_y * side * es * 0.35)), pupil_r)
+                    if es > 2:
+                        ref_x = ex + int(perp_x * side * es * 0.5) - int(tx * sz * 0.02)
+                        ref_y = ey + int(perp_y * side * es * 0.5) - int(ty * sz * 0.02)
+                        pygame.draw.circle(surf, EYE_REFLECTION, (ref_x, ref_y), max(1, es // 3))
 
-                iris_r = max(1, es - 1)
-                iris_off_x = int(perp_x * side * es * 0.35)
-                iris_off_y = int(perp_y * side * es * 0.35)
-                pygame.draw.circle(surf, EYE_IRIS, (ex + iris_off_x, ey + iris_off_y), iris_r)
-
-                pupil_r = max(1, es - 2)
-                pygame.draw.circle(surf, EYE_PUPIL, (ex + int(perp_x * side * es * 0.35), ey + int(perp_y * side * es * 0.35)), pupil_r)
-
-                if es > 2:
-                    ref_x = ex + int(perp_x * side * es * 0.5) - int(dir_x * 0.2)
-                    ref_y = ey + int(perp_y * side * es * 0.5) - int(dir_y * 0.2)
-                    pygame.draw.circle(surf, EYE_REFLECTION, (ref_x, ref_y), max(1, es // 3))
-
+            # Tongue along tangent
             tongue_len = int(HEX_SIZE * 0.16)
             tongue_w = max(1, int(HEX_SIZE * 0.022))
             tongue_flick = math.sin(time_float * 14) * 2
-            tx = int(sx + dir_x * (tongue_len + tongue_flick))
-            ty = int(sy + dir_y * (tongue_len + tongue_flick))
-            pygame.draw.line(surf, (210, 70, 70), (int(sx), int(sy)), (tx, ty), tongue_w)
-            if dir_len > 0:
-                ppx = -dir_y / dir_len
-                ppy = dir_x / dir_len
+            tx_t = int(sx + tx * (tongue_len + tongue_flick))
+            ty_t = int(sy + ty * (tongue_len + tongue_flick))
+            pygame.draw.line(surf, (210, 70, 70), (int(sx), int(sy)), (tx_t, ty_t), tongue_w)
+            if dir_len > 0.001:
+                ppx = -ty / dir_len
+                ppy = tx / dir_len
                 fork_s = 2
                 fork_l = int(HEX_SIZE * 0.04)
                 pygame.draw.line(surf, (210, 70, 70),
-                    (tx, ty),
-                    (tx + int(ppx * fork_s) + int(dir_x * fork_l),
-                     ty + int(ppy * fork_s) + int(dir_y * fork_l)),
+                    (tx_t, ty_t),
+                    (tx_t + int(ppx * fork_s) + int(tx * fork_l),
+                     ty_t + int(ppy * fork_s) + int(ty * fork_l)),
                     max(1, tongue_w - 1))
                 pygame.draw.line(surf, (210, 70, 70),
-                    (tx, ty),
-                    (tx - int(ppx * fork_s) + int(dir_x * fork_l),
-                     ty - int(ppy * fork_s) + int(dir_y * fork_l)),
+                    (tx_t, ty_t),
+                    (tx_t - int(ppx * fork_s) + int(tx * fork_l),
+                     ty_t - int(ppy * fork_s) + int(ty * fork_l)),
                     max(1, tongue_w - 1))
 
     def draw_apple(self, surf, time_float):
@@ -746,16 +1245,24 @@ class SnakeGame:
 
         pulse = 1.0 + math.sin(time_float * 2.5) * 0.06
         sz = int(HEX_SIZE * 0.36 * pulse * 2)
-        self.draw_shadow(surf, cx + math.sin(time_float * 0.5) * 1.2, cy, 0.5, int(sz * 0.6), 40)
+
+        # Spawn pop-in animation
+        spawn_scale = 1.0
+        if self.apple_anim['spawn_timer'] > 0:
+            spawn_t = 1.0 - self.apple_anim['spawn_timer'] / APPLE_SPAWN_SCALE_TIME
+            spawn_scale = max(0.0, min(1.0, spawn_t))
+
+        self.draw_shadow(surf, cx + math.sin(time_float * 0.5) * 1.2, cy, 2.5, int(sz * 0.6))
 
         bob = math.sin(time_float * 1.2) * 0.8
         sx_p, sy_p, _ = self.camera.project(cx + math.sin(time_float * 0.5) * 1.2, cy, 2 + bob)
 
-        sprite = self._apple_sprites.get(sz)
+        display_sz = max(1, int(sz * spawn_scale))
+        sprite = self._apple_sprites.get(display_sz)
         if sprite is None:
-            sprite = pygame.transform.smoothscale(self.master_apple_sprite, (sz, sz))
-            self._apple_sprites[sz] = sprite
-        surf.blit(sprite, (int(sx_p - sz // 2), int(sy_p - sz // 2)))
+            sprite = pygame.transform.smoothscale(self.master_apple_sprite, (display_sz, display_sz))
+            self._apple_sprites[display_sz] = sprite
+        surf.blit(sprite, (int(sx_p - display_sz // 2), int(sy_p - display_sz // 2)))
 
         sx_top, sy_top, _ = self.camera.project(cx, cy, 2 + bob + TILE_HEIGHT * 1.0 + sz * 0.3)
         stem_w = max(1, int(HEX_SIZE * 0.035))
@@ -803,23 +1310,14 @@ class SnakeGame:
         pygame.draw.polygon(self._leaf_surf, APPLE_LEAF_HIGHLIGHT, rot_pts, 1)
         surf.blit(self._leaf_surf, (lx - lr_x * 1.5, ly - lr_y * 1.5))
 
-    def update_ambient_particles(self):
-        target_count = 120
-        if len(self.particles) < target_count and random.random() < 0.15:
+    def update_ambient_particles(self, dt):
+        target_count = 60
+        if len(self.particles) < target_count and random.random() < 0.15 * dt * 60:
             q = random.randint(-GRID_RADIUS, GRID_RADIUS)
             r = random.randint(-GRID_RADIUS, GRID_RADIUS)
             cx, cy = hex_to_pixel(q, r)
             cz = random.uniform(0, TILE_HEIGHT * 0.6)
-            vx = random.uniform(-0.12, 0.12)
-            vy = random.uniform(-0.06, 0.06)
-            vz = random.uniform(0.01, 0.06)
-            is_firefly = random.random() < 0.3
-            if is_firefly:
-                c = random.choice([(180, 230, 100), (220, 255, 150), (200, 240, 120)])
-                self.particles.emit(cx, cy, cz, vx, vy, vz, c, random.uniform(2, 3.5), random.uniform(4, 8), 'glow')
-            else:
-                c = random.choice([(50, 160, 140), (70, 190, 155), (90, 210, 170), (40, 140, 130)])
-                self.particles.emit(cx, cy, cz, vx, vy, vz, c, random.uniform(1, 2), random.uniform(3, 7))
+            self.particles.emit_ambient_mote(cx, cy, cz)
 
     def _build_depth_buckets(self, items, num_buckets=256):
         if not items:
@@ -845,20 +1343,50 @@ class SnakeGame:
         return result
 
     def render(self):
+        _t_frame = time.perf_counter()
+
+        if self.state in (GameState.START, GameState.SETTINGS):
+            self._snake_set = set()
+            self._spline_positions = None
+            self.camera.update_idle(1.0 / max(RENDER_FPS, 1), self.render_time)
+        else:
+            self._snake_set = set(self.snake)
+            self._spline_positions = None
+            if len(self.path_history) >= 2:
+                self._spline_positions = sample_spline_path(list(self.path_history), len(self.snake))
+            self.camera.follow_snake(*self.snake[0], self.direction, 1.0 / max(RENDER_FPS, 1), self._speed_ratio)
         surf = self.screen
-        time_float = self.frame_count / 60.0
+        time_float = self.render_time
+
+        light_dir, ambient, sun_color = compute_sun_light(time_float)
+        self._light_dir = light_dir
+        self._ambient = ambient
+        self._sun_color = sun_color
+        self._day_cycle = math.sin(time_float * SUN_ANGLE_SPEED)
+        self._sky_top, self._sky_mid, self._sky_hor = compute_sky_color(time_float)
+        self._fog_tint = lerp_color(self._sky_mid, FOG_COLOR, 0.6)
 
         shake_x, shake_y = 0, 0
         if self.screen_shake > 0:
-            intensity = self.screen_shake / 15 * 5
+            intensity = self.screen_shake / 0.25 * 5
             shake_x, shake_y = screen_shake_offset(intensity)
 
+        _t = time.perf_counter()
+        self.resources._update_sky(time_float, self._day_cycle)
         surf.blit(self.bg_surf, (shake_x, shake_y))
+
+        star_alpha = 0
+        if self._day_cycle < SKY_STAR_FADE_START:
+            star_alpha = int(255 * min(1.0, (SKY_STAR_FADE_START - self._day_cycle) / (SKY_STAR_FADE_START - SKY_STAR_FADE_END)))
+        self.star_surf.set_alpha(star_alpha)
         surf.blit(self.star_surf, (shake_x, shake_y))
 
-        sun_x = WIDTH // 2 + int(math.sin(time_float * SUN_ANGLE_SPEED) * 200)
+        sun_x_off = int(math.sin(time_float * SUN_ANGLE_SPEED) * 200)
         sun_y = int(HEIGHT * 0.15)
-        surf.blit(self.sun_disc_surf, (sun_x - 62, sun_y - 62), special_flags=pygame.BLEND_ADD)
+        surf.blit(self.sun_disc_surf, (WIDTH // 2 + sun_x_off - 62, sun_y - 62), special_flags=pygame.BLEND_ADD)
+
+        water_color_base = lerp_color(self._sky_mid, (6, 20, 50), 0.4)
+        water_highlight = lerp_color(sun_color, (50, 130, 200), 0.5)
 
         self.water_surf.fill((0, 0, 0, 0))
         for wi in range(-25, 25):
@@ -874,12 +1402,12 @@ class SnakeGame:
             sx1, sy1, _ = self.camera.project(-w2, wy, z_w)
             sx2, sy2, _ = self.camera.project(w2, wy, z_w)
 
-            wave = math.sin(wy * 0.04 + time_float * 0.6) * 2
-            wave2 = math.sin(wy * 0.07 + time_float * 0.9 + 1) * 1.2
-            wave3 = math.sin(wy * 0.02 + time_float * 0.3 + 2.5) * 0.6
+            wave = math.sin(wy * 0.04 + time_float * WATER_WAVE_SPEED) * WATER_WAVE_AMP
+            wave2 = math.sin(wy * 0.07 + time_float * WATER_WAVE_SPEED * 1.5 + 1) * WATER_WAVE_AMP * 0.6
+            wave3 = math.sin(wy * 0.02 + time_float * WATER_WAVE_SPEED * 0.5 + 2.5) * WATER_WAVE_AMP * 0.3
             combined_wave = wave + wave2 + wave3
 
-            c = lerp_color(WATER_COLOR_1, WATER_COLOR_2, t)
+            c = lerp_color(water_color_base, WATER_COLOR_2, t)
             fresnel = 0.3 + 0.7 * (1.0 - abs(t - 0.5) * 2) ** 2
             a = int(190 * fresnel)
 
@@ -890,16 +1418,16 @@ class SnakeGame:
             if wi % 4 == 0:
                 hl_a = int(50 * fresnel * (0.5 + 0.5 * math.sin(time_float * 1.2 + wi * 0.3)))
                 if hl_a > 2:
-                    pygame.draw.line(self.water_surf, (*WATER_HIGHLIGHT, hl_a),
+                    pygame.draw.line(self.water_surf, (*water_highlight, hl_a),
                         (sx1, sy1 + combined_wave + 1), (sx2, sy2 + combined_wave + 1), 1)
 
-        sun_ref_x = sun_x
+        sun_ref_x = WIDTH // 2 + sun_x_off
         sun_ref_y_start = HEIGHT * 0.5
         sun_ref_h = HEIGHT * 0.2
         self._water_reflect_surf.fill((0, 0, 0, 0))
         for ry in range(int(sun_ref_h)):
             alpha = int(40 * (1 - ry / sun_ref_h) * (0.5 + 0.5 * math.sin(time_float * 2 + ry * 0.1)))
-            pygame.draw.line(self._water_reflect_surf, (*SUN_COLOR, alpha), (0, ry), (100, ry), 2)
+            pygame.draw.line(self._water_reflect_surf, (*sun_color, alpha), (0, ry), (100, ry), 2)
         surf.blit(self._water_reflect_surf, (sun_ref_x - 50, sun_ref_y_start), special_flags=pygame.BLEND_ADD)
 
         if not hasattr(self, '_reflect_cache'):
@@ -912,12 +1440,16 @@ class SnakeGame:
 
         surf.blit(self.water_surf, (0, 0))
 
-        self._build_tile_cache()
+        _t0 = time.perf_counter()
+        self._build_ground()
         surf.blit(self.ground_cache, (shake_x, shake_y))
+        self._build_tile_cache()
+        self._perf_timings['tiles'] = (time.perf_counter() - _t0) * 1000
 
         self.draw_cache.fill((0, 0, 0, 0))
         self.draw_cache.blit(self._tile_cache, (0, 0))
 
+        _t0 = time.perf_counter()
         draw_items = []
         if self.apple:
             ax, ay = hex_to_pixel(*self.apple)
@@ -925,7 +1457,10 @@ class SnakeGame:
             draw_items.append((depth, 'apple'))
 
         for idx, (q, r) in enumerate(self.snake):
-            cx, cy = hex_to_pixel(q, r)
+            if self._spline_positions and idx < len(self._spline_positions):
+                cx, cy = self._spline_positions[idx][0], self._spline_positions[idx][1]
+            else:
+                cx, cy = hex_to_pixel(q, r)
             _, _, depth = self.camera.project(cx, cy, 2)
             draw_items.append((depth, 'snake', idx, q, r))
 
@@ -939,31 +1474,73 @@ class SnakeGame:
                 self.draw_snake_segment(self.draw_cache, idx, q, r, time_float)
 
         surf.blit(self.draw_cache, (shake_x, shake_y))
+        self._perf_timings['snake'] = (time.perf_counter() - _t0) * 1000
 
+        _t0 = time.perf_counter()
         if self.gl_renderer.available:
             scene = surf.copy()
             result = self.gl_renderer.post_process(scene, time_float, self.fog_surf)
             if result:
                 surf.blit(result, (0, 0))
         else:
-            bloom_small = pygame.transform.smoothscale(surf, (WIDTH // 4, HEIGHT // 4))
-            bloom_blur = pygame.transform.smoothscale(bloom_small, (WIDTH, HEIGHT))
-            bloom_blur.set_alpha(28)
-            surf.blit(bloom_blur, (0, 0), special_flags=pygame.BLEND_ADD)
+            bloom_enabled = self.settings.get('bloom', POST_BLOOM_ENABLED)
+            tone_map_enabled = self.settings.get('tone_map', POST_TONE_MAP_ENABLED)
+            god_rays_enabled = self.settings.get('god_rays', POST_GOD_RAYS_ENABLED)
+            film_grain_enabled = self.settings.get('film_grain', POST_FILM_GRAIN_ENABLED)
 
-            self._rays_surf_cache.fill((0, 0, 0, 0))
-            for ri, angle in enumerate(self.sunray_angles):
-                ra = angle + math.sin(time_float * 0.15 + ri) * 0.12
-                ray_len = 300 + int(math.sin(time_float * 0.1 + ri * 1.5) * 100)
-                ex = sun_x + int(math.cos(ra) * ray_len)
-                ey = sun_y + int(math.sin(ra) * ray_len)
-                ray_a = int(8 + 4 * math.sin(time_float * 0.4 + ri * 1.7))
-                ray_w = max(1, 3 - ri // 5)
-                pygame.draw.line(self._rays_surf_cache, (200, 220, 255, ray_a), (sun_x, sun_y), (ex, ey), ray_w)
-            surf.blit(self._rays_surf_cache, (0, 0), special_flags=pygame.BLEND_ADD)
+            if bloom_enabled:
+                bright_surf = surf.copy()
+                for by in range(0, HEIGHT, 2):
+                    for bx in range(0, WIDTH, 2):
+                        c = bright_surf.get_at((bx, by))
+                        luma = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+                        if luma < 255 * BLOOM_THRESHOLD:
+                            bright_surf.set_at((bx, by), (0, 0, 0, 0))
+                bloom_small = pygame.transform.smoothscale(bright_surf, (WIDTH // 4, HEIGHT // 4))
+                bloom_blur = pygame.transform.smoothscale(bloom_small, (WIDTH, HEIGHT))
+                bloom_blur.set_alpha(int(28 * BLOOM_INTENSITY * 2))
+                surf.blit(bloom_blur, (0, 0), special_flags=pygame.BLEND_ADD)
+
+            if tone_map_enabled:
+                for ty in range(0, HEIGHT, 2):
+                    for tx in range(0, WIDTH, 2):
+                        c = surf.get_at((tx, ty))
+                        r = c[0] / 255.0; g = c[1] / 255.0; b = c[2] / 255.0
+                        r = r / (r + 1.0); g = g / (g + 1.0); b = b / (b + 1.0)
+                        surf.set_at((tx, ty), (int(r * 255), int(g * 255), int(b * 255), c[3]))
+
+            if god_rays_enabled:
+                self._rays_surf_cache.fill((0, 0, 0, 0))
+                sun_sx = WIDTH // 2 + sun_x_off
+                sun_sy = sun_y
+                for ri, angle in enumerate(self.sunray_angles):
+                    ra = angle + math.sin(time_float * 0.15 + ri) * 0.12
+                    ray_len = 300 + int(math.sin(time_float * 0.1 + ri * 1.5) * 100)
+                    ex = sun_sx + int(math.cos(ra) * ray_len)
+                    ey = sun_sy + int(math.sin(ra) * ray_len)
+                    ray_a = int(8 + 4 * math.sin(time_float * 0.4 + ri * 1.7))
+                    ray_w = max(1, 3 - ri // 5)
+                    pygame.draw.line(self._rays_surf_cache, (*sun_color, ray_a), (sun_sx, sun_sy), (ex, ey), ray_w)
+                surf.blit(self._rays_surf_cache, (0, 0), special_flags=pygame.BLEND_ADD)
 
             surf.blit(self.fog_surf, (0, 0), special_flags=pygame.BLEND_ADD)
 
+            if film_grain_enabled:
+                grain_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+                for _ in range(2000):
+                    gx = random.randint(0, WIDTH - 1)
+                    gy = random.randint(0, HEIGHT - 1)
+                    ga = random.randint(0, int(255 * FILM_GRAIN_STRENGTH))
+                    if ga > 0:
+                        grain_surf.set_at((gx, gy), (255, 255, 255, ga))
+                surf.blit(grain_surf, (0, 0), special_flags=pygame.BLEND_ADD)
+        if FOG_DENSITY > 0:
+            tint_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            tint_surf.fill((*self._fog_tint, int(40 * FOG_DENSITY * 3)))
+            surf.blit(tint_surf, (0, 0), special_flags=pygame.BLEND_ADD)
+        self._perf_timings['post'] = (time.perf_counter() - _t0) * 1000
+
+        _t0 = time.perf_counter()
         if self.apple and self.state != GameState.GAME_OVER:
             px, py = hex_to_pixel(*self.apple)
             sx, sy, _ = self.camera.project(px, py, 0.5)
@@ -983,23 +1560,65 @@ class SnakeGame:
         self.particles.sort_by_z()
         for p in self.particles:
             p.draw(surf, self)
+        self._perf_timings['particles'] = (time.perf_counter() - _t0) * 1000
 
-        draw_ui(surf, shake_x, shake_y, self)
+        _t0 = time.perf_counter()
+        if self.state == GameState.START:
+            draw_title_screen(surf, self, self.menu_selection, self.render_time)
+        elif self.state == GameState.SETTINGS:
+            draw_settings_screen(surf, self, self.menu_selection, self.settings,
+                                 self.render_time, self._settings_previous_state == GameState.PAUSED)
+        else:
+            draw_ui(surf, shake_x, shake_y, self)
+            draw_minimap(surf, self.snake, self.apple, self)
 
-        if self.state == GameState.PAUSED:
-            draw_pause_overlay(surf, self)
+            if self.state == GameState.PAUSED:
+                draw_pause_menu(surf, self, self.menu_selection)
 
-        if self.state == GameState.GAME_OVER:
-            draw_game_over(surf, self)
+            if self.state == GameState.GAME_OVER:
+                draw_game_over(surf, self, self.menu_selection, self.score_count_up,
+                               self.new_record_bounce_timer)
+                if self._show_stats:
+                    from ui import draw_stats_overlay
+                    draw_stats_overlay(surf, self)
 
-        draw_minimap(surf, self.snake, self.apple, self)
+        # Fade overlay for transitions
+        if self.fade_alpha > 0:
+            fade_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+            fade_surf.fill((0, 0, 0, int(self.fade_alpha)))
+            surf.blit(fade_surf, (0, 0))
+
+        self.grade_overlay.fill((0, 0, 0, 0))
+        if self.grade_warm_flash > 0:
+            alpha = int(120 * min(1.0, self.grade_warm_flash / 0.15))
+            pygame.draw.rect(self.grade_overlay, (255, 180, 80, alpha), (0, 0, WIDTH, HEIGHT))
+        if self.grade_cool_shift > 0:
+            alpha = int(60 * min(1.0, self.grade_cool_shift / 0.3))
+            pygame.draw.rect(self.grade_overlay, (100, 140, 220, alpha), (0, 0, WIDTH, HEIGHT))
+        if self.grade_death_darken > 0:
+            t = min(1.0, self.grade_death_darken / 0.5)
+            alpha = int(180 * t)
+            gray = int(40 * t)
+            pygame.draw.rect(self.grade_overlay, (gray, gray, gray, alpha), (0, 0, WIDTH, HEIGHT))
+        surf.blit(self.grade_overlay, (0, 0))
+
+        self._draw_birds(surf, time_float)
+
         surf.blit(self.vignette_surf, (0, 0))
+
+        if self._debug_overlay:
+            from ui import draw_debug_overlay
+            draw_debug_overlay(surf, self)
+
+        self._perf_timings['ui'] = (time.perf_counter() - _t0) * 1000
+        self._perf_timings['total'] = (time.perf_counter() - _t_frame) * 1000
 
         needs_full = (self._full_redraw_requested or
                       not self._tile_cache_valid or
                       self.eat_flash > 0 or
-                      self.state in (GameState.PAUSED, GameState.GAME_OVER) or
-                      self.frame_count == 0)
+                      self.state in (GameState.PAUSED, GameState.GAME_OVER,
+                                     GameState.START, GameState.SETTINGS) or
+                       self.render_time == 0.0)
         self._full_redraw_requested = False
 
         if not needs_full:
@@ -1010,60 +1629,74 @@ class SnakeGame:
             self._prev_dirty_rects = []
             all_rects = [pygame.Rect(0, 0, WIDTH, HEIGHT)]
 
-        self._full_redraw_counter += 1
-        if self._full_redraw_counter >= 60:
-            all_rects = [pygame.Rect(0, 0, WIDTH, HEIGHT)]
-            self._full_redraw_counter = 0
-
         merged = self._merge_rects(all_rects)
         if len(merged) == 1 and merged[0] == pygame.Rect(0, 0, WIDTH, HEIGHT):
             pygame.display.flip()
         else:
             pygame.display.update(merged)
 
-    def wait_for_key(self):
-        while self.state == GameState.START:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    self.quit()
-                    return
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.quit()
-                        return
-                    self.state = GameState.PLAYING
-                    return
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    self.state = GameState.PLAYING
-                    return
-            draw_start_screen(self)
-            pygame.display.flip()
-            self.clock.tick(30)
-
     def run(self):
-        self.wait_for_key()
-        if self.state == GameState.QUIT:
-            pygame.quit()
-            sys.exit()
+        sim_accumulator = 0.0
+        particle_accumulator = 0.0
+        self.render_time = 0.0
+
         while self.state != GameState.QUIT:
-            self.reset()
-            while self.state in (GameState.PLAYING, GameState.PAUSED):
-                dt = self.clock.tick(60) / 1000.0
-                self.handle_events()
-                self.update(dt)
-                self.render()
-            while self.state == GameState.GAME_OVER:
-                dt = self.clock.tick(60) / 1000.0
-                self.handle_events()
-                self.particles.update_all(dt)
-                self.particles.clean()
-                self.render()
+            raw_dt = self.clock.tick(RENDER_FPS) / 1000.0
+            self.handle_events()
+
+            if self.state == GameState.PLAYING:
+                sim_accumulator += raw_dt
+                while sim_accumulator >= FIXED_DT:
+                    self.update(FIXED_DT)
+                    sim_accumulator -= FIXED_DT
+                    if self.state != GameState.PLAYING:
+                        sim_accumulator = 0.0
+                        break
+
+                interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
+                self.move_lerp = min(1.0, (self.move_timer + sim_accumulator) / interval)
+
+            elif self.state == GameState.GAME_OVER:
+                self._update_game_over_countup(raw_dt)
+                self._update_transition(raw_dt)
+                particle_accumulator += raw_dt
+                while particle_accumulator >= FIXED_DT:
+                    self.particles.update_all(FIXED_DT)
+                    self.particles.clean()
+                    particle_accumulator -= FIXED_DT
+
+                self.ambient_time += raw_dt * 0.3
+                day_cycle = math.sin(self.ambient_time * SUN_ANGLE_SPEED)
+                self.audio.update(day_cycle, 0.0, raw_dt)
+
+            elif self.state in (GameState.START, GameState.SETTINGS):
+                self.ambient_time += raw_dt * 0.3
+                day_cycle = math.sin(self.ambient_time * SUN_ANGLE_SPEED)
+                self.audio.update(day_cycle, 0.0, raw_dt)
+                self._update_transition(raw_dt)
+                sim_accumulator = 0.0
+                particle_accumulator = 0.0
+
+            elif self.state == GameState.PAUSED:
+                self._update_transition(raw_dt)
+                sim_accumulator = 0.0
+                particle_accumulator = 0.0
+
+            self.render_time += raw_dt
+            self.render()
+
         pygame.quit()
         sys.exit()
 
     def quit(self):
+        self.persistence.save()
         self.state = GameState.QUIT
 
 
-if __name__ == '__main__':
+def main():
+    _parse_cli_args()
     SnakeGame().run()
+
+
+if __name__ == '__main__':
+    main()

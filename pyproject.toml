@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snakev2"
+version = "0.1.0"
+description = "3D Hex Grid Snake Game"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "SnakeV2 Contributors"},
+]
+
+keywords = ["game", "snake", "hex-grid", "3d", "pygame"]
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Games/Entertainment :: Arcade",
+]
+
+dependencies = [
+    "pygame>=2.0.0",
+]
+
+[project.optional-dependencies]
+gl = ["moderngl"]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/snakev2"
+
+[project.scripts]
+snakev2 = "main:main"
+
+[tool.setuptools]
+py-modules = [
+    "__version__", "__main__",
+    "main", "config", "utils", "camera", "game_state",
+    "particle", "resources", "shaders", "gl_renderer",
+    "ui", "audio", "persistence",
+]
+
+[tool.setuptools.packages.find]
+include = ["snakev2*"]
+exclude = ["tests*"]

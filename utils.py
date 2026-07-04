@@ -102,14 +102,20 @@ def wrap_coords(q, r):
     return wq, wr
 
 
+_all_hexes_cache = None
+
 def all_hexes():
-    cols = GRID_RADIUS * 2 + 1
-    rows = GRID_RADIUS * 2 + 1
-    for row in range(rows):
-        for col in range(cols):
-            q = col - (row + (row & 1)) // 2 - GRID_RADIUS
-            r = row - GRID_RADIUS
-            yield (q, r)
+    global _all_hexes_cache
+    if _all_hexes_cache is None:
+        cols = GRID_RADIUS * 2 + 1
+        rows = GRID_RADIUS * 2 + 1
+        _all_hexes_cache = []
+        for row in range(rows):
+            for col in range(cols):
+                q = col - (row + (row & 1)) // 2 - GRID_RADIUS
+                r = row - GRID_RADIUS
+                _all_hexes_cache.append((q, r))
+    return _all_hexes_cache
 
 
 def lerp_color(c1, c2, t):
@@ -143,8 +149,74 @@ def compute_tile_ao(q, r, snake_set):
         elif (nq, nr) in snake_set:
             neighbor_count += 1
     edge_dist = (q * q + r * r + q * r) ** 0.5 / GRID_RADIUS
-    ao = 1.0 - 0.04 * neighbor_count - 0.12 * edge_dist
-    return max(0.55, min(1.0, ao))
+    noise = tile_noise(q, r)
+    height_var = abs(noise.get('detail', 0)) * 0.15
+    base_ao = 1.0 - 0.04 * neighbor_count - 0.12 * edge_dist - height_var * 0.2
+    return max(0.45, min(1.0, base_ao))
+
+
+def compute_sun_light(time_float):
+    angle = time_float * SUN_ANGLE_SPEED
+    day_cycle = math.sin(angle)
+
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    lx = LIGHT_DIR[0] * cos_a - LIGHT_DIR[1] * sin_a
+    ly = LIGHT_DIR[0] * sin_a + LIGHT_DIR[1] * cos_a
+    lz = LIGHT_DIR[2]
+    ll = math.sqrt(lx * lx + ly * ly + lz * lz)
+    light_dir = (lx / ll, ly / ll, lz / ll)
+
+    t = day_cycle * 0.5 + 0.5
+    ambient = SUN_AMBIENT_MIN + (SUN_AMBIENT_MAX - SUN_AMBIENT_MIN) * t
+
+    if day_cycle < -0.3:
+        dusk_t = (day_cycle + 0.3) / 0.7
+        sun_color = lerp_color(SUN_COLOR_NIGHT, SUN_COLOR_DUSK, max(0.0, min(1.0, dusk_t + 1.0)))
+    elif day_cycle < 0.3:
+        dusk_t = (day_cycle + 0.3) / 0.6
+        sun_color = lerp_color(SUN_COLOR_DUSK, SUN_COLOR_DAY, dusk_t)
+    else:
+        sun_color = SUN_COLOR_DAY
+
+    return light_dir, ambient, sun_color
+
+
+def compute_lighting(normal, light_dir, ambient, sun_color, specular_power=0):
+    ndotl = max(0.0, dot3(normal, light_dir))
+    diffuse_intensity = ambient + (1.0 - ambient) * ndotl
+    c = mul_color(sun_color, diffuse_intensity)
+    specular = 0.0
+    if specular_power > 0 and ndotl > 0:
+        view_dir = (0.0, 0.0, 1.0)
+        hx = light_dir[0] + view_dir[0]
+        hy = light_dir[1] + view_dir[1]
+        hz = light_dir[2] + view_dir[2]
+        hl = math.sqrt(hx * hx + hy * hy + hz * hz)
+        if hl > 0:
+            hx /= hl; hy /= hl; hz /= hl
+        nh = max(0.0, hx * normal[0] + hy * normal[1] + hz * normal[2])
+        specular = nh ** specular_power
+    return c, specular
+
+
+def compute_sky_color(time_float):
+    angle = time_float * SUN_ANGLE_SPEED
+    day_cycle = math.sin(angle)
+    t = day_cycle * 0.5 + 0.5
+
+    top = lerp_color((2, 4, 20), SKY_TOP, t)
+    mid = lerp_color((5, 8, 30), SKY_MID, t)
+    horizon = lerp_color((10, 12, 40), SKY_HORIZON, t)
+
+    if day_cycle < 0.3 and day_cycle > -0.3:
+        warm = SUN_COLOR_DUSK
+        warm_t = 1.0 - abs(day_cycle) / 0.3
+        top = lerp_color(top, (warm[0]//4, warm[1]//6, warm[2]//8), warm_t * 0.4)
+        mid = lerp_color(mid, (warm[0]//2, warm[1]//3, warm[2]//4), warm_t * 0.4)
+        horizon = lerp_color(horizon, warm, warm_t * 0.5)
+
+    return top, mid, horizon
 
 
 def dot3(a, b):
@@ -169,6 +241,85 @@ def tile_noise(q, r):
             'tex': perlin_noise(q * 8 + r * 5, r * 8 - q * 5, 3.0, 2, 0.4),
         }
     return _tile_noise_cache[(q, r)]
+
+
+def sample_spline_path(path_points, num_segments):
+    """Sample evenly-spaced positions along a Catmull-Rom curve
+    traced through path_points (list of (q,r) hex coords, head first).
+
+    Returns list of (px, py, tx, ty) where (tx,ty) is the unit tangent.
+    """
+    if len(path_points) < 2:
+        if not path_points:
+            return [(0.0, 0.0, 0.0, 0.0)] * max(1, num_segments)
+        px, py = hex_to_pixel(*path_points[0])
+        return [(px, py, 0.0, 0.0)] * num_segments
+
+    pixels = [hex_to_pixel(q, r) for q, r in path_points]
+    n = len(pixels)
+
+    if num_segments <= 1:
+        px, py = pixels[0]
+        tx = ty = 0.0
+        if n >= 2:
+            tx = pixels[1][0] - px
+            ty = pixels[1][1] - py
+            tl = math.hypot(tx, ty)
+            if tl > 0.001:
+                tx /= tl; ty /= tl
+        return [(px, py, tx, ty)]
+
+    segments = []
+    lengths = []
+    total_len = 0.0
+    N_SAMP = 10
+
+    for i in range(n - 1):
+        p0 = pixels[max(0, i - 1)]
+        p1 = pixels[i]
+        p2 = pixels[i + 1]
+        p3 = pixels[min(n - 1, i + 2)]
+        seg_len = 0.0
+        px, py = p1
+        for s in range(1, N_SAMP + 1):
+            t = s / N_SAMP
+            nx = catmull_rom(p0[0], p1[0], p2[0], p3[0], t)
+            ny = catmull_rom(p0[1], p1[1], p2[1], p3[1], t)
+            seg_len += math.hypot(nx - px, ny - py)
+            px, py = nx, ny
+        segments.append((p0, p1, p2, p3))
+        lengths.append(seg_len)
+        total_len += seg_len
+
+    if total_len < 0.001:
+        px, py = pixels[0]
+        return [(px, py, 0.0, 0.0)] * num_segments
+
+    result = []
+    for si in range(num_segments):
+        target = total_len * (1.0 - si / max(1, num_segments - 1))
+        acc = 0.0
+        px, py, tx, ty = pixels[-1][0], pixels[-1][1], 0.0, 0.0
+        for i, seg_len in enumerate(lengths):
+            if acc + seg_len >= target - 1e-10 or i == len(lengths) - 1:
+                lt = max(0.0, min(1.0, (target - acc) / max(0.001, seg_len)))
+                p0, p1, p2, p3 = segments[i]
+                px = catmull_rom(p0[0], p1[0], p2[0], p3[0], lt)
+                py = catmull_rom(p0[1], p1[1], p2[1], p3[1], lt)
+                t2 = lt * lt
+                tx = 0.5 * ((-p0[0] + p2[0])
+                            + 2.0*(2.0*p0[0] - 5.0*p1[0] + 4.0*p2[0] - p3[0])*lt
+                            + 3.0*(-p0[0] + 3.0*p1[0] - 3.0*p2[0] + p3[0])*t2)
+                ty = 0.5 * ((-p0[1] + p2[1])
+                            + 2.0*(2.0*p0[1] - 5.0*p1[1] + 4.0*p2[1] - p3[1])*lt
+                            + 3.0*(-p0[1] + 3.0*p1[1] - 3.0*p2[1] + p3[1])*t2)
+                tl = math.hypot(tx, ty)
+                if tl > 0.001:
+                    tx /= tl; ty /= tl
+                break
+            acc += seg_len
+        result.append((px, py, tx, ty))
+    return result
 
 
 def generate_soft_shadow(radius):

@@ -5,166 +5,300 @@ from game_state import GameState
 from utils import hex_to_pixel, all_hexes
 
 
+def _draw_panel(surf, x, y, w, h, alpha=200, r=8, g=12, b=30, border_color=(60, 140, 100), border_alpha=100):
+    pane = pygame.Surface((w, h), pygame.SRCALPHA)
+    for py in range(h):
+        t = py / h
+        a = int(alpha * (1 - abs(t - 0.5) * 0.4))
+        c = (r, g, b, a)
+        pygame.draw.line(pane, c, (0, py), (w, py))
+    surf.blit(pane, (x, y))
+    pygame.draw.rect(surf, (*border_color, border_alpha), (x, y, w, h), 1, border_radius=8)
+    pygame.draw.rect(surf, (*border_color, 40), (x + 2, y + 2, w - 4, h - 4), 1, border_radius=7)
+
+
+def _draw_menu_items(surf, items, selection, x, y, game, spacing=42, align_center=True, return_rects=False):
+    rects = []
+    for i, (label, sub_label) in enumerate(items):
+        is_selected = i == selection
+        font = game.font_small if not is_selected else game.font_med
+        color = TEXT_GLOW if is_selected else TEXT_DIM
+        if is_selected:
+            glow = game.font_med.render(label, True, (40, 180, 120, 60))
+            pulse = 1.0 + 0.04 * math.sin(pygame.time.get_ticks() * 0.005 + i)
+            scale_s = int(font.render(label, True, color).get_width() * pulse)
+        txt = font.render(label, True, color)
+        tw = txt.get_width()
+        th = txt.get_height()
+        iy = y + i * spacing
+        if align_center:
+            ix = x
+        else:
+            ix = x
+        if align_center:
+            r = txt.get_rect(center=(x, iy))
+        else:
+            r = txt.get_rect(midleft=(x, iy))
+        if is_selected:
+            glow_r = txt.get_rect(center=(x, iy))
+            for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
+                surf.blit(glow, (glow_r.x + dx, glow_r.y + dy))
+            indicator = game.font_micro.render(">", True, TEXT_GLOW)
+            if align_center:
+                surf.blit(indicator, (r.left - 22, r.y + 2))
+            else:
+                surf.blit(indicator, (x - 22, r.y + 2))
+        surf.blit(txt, r)
+        if sub_label:
+            sub = game.font_micro.render(sub_label, True, TEXT_DIM)
+            sr = sub.get_rect(midleft=(r.right + 12, r.centery))
+            surf.blit(sub, sr)
+        rects.append(r.inflate(24, 6))
+    if return_rects:
+        return rects
+
+
 def draw_ui(surf, shake_x, shake_y, game):
     panel_w, panel_h = 200, 72
-    panel = pygame.Surface((panel_w, panel_h), pygame.SRCALPHA)
-    for y in range(panel_h):
-        t = y / panel_h
-        a = int(160 * (1 - t * 0.3))
-        c = (5, 8, 22, a)
-        pygame.draw.line(panel, c, (0, y), (panel_w, y))
-    surf.blit(panel, (20 + shake_x, 18 + shake_y))
+    px = 20 + shake_x
+    py = 18 + shake_y
+    _draw_panel(surf, px, py, panel_w, panel_h, alpha=160)
 
-    pygame.draw.rect(surf, (50, 130, 90, 120), (20 + shake_x, 18 + shake_y, panel_w, panel_h), 1, border_radius=6)
-    pygame.draw.rect(surf, (80, 180, 130, 30), (22 + shake_x, 20 + shake_y, panel_w - 4, panel_h - 4), 1, border_radius=5)
-
+    # Score with pop animation
     score_text = f"{game.score}"
-    text_surf = game.font_score.render(score_text, True, TEXT_WHITE)
-    score_glow = game.font_score.render(score_text, True, (40, 180, 120, 60))
-    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+    pop_scale = 1.0
+    if game.score_pop_timer > 0:
+        t = game.score_pop_timer / SCORE_POP_DURATION
+        pop_scale = 1.0 + 0.35 * math.sin(t * math.pi)
+        pop_scale = max(1.0, pop_scale)
+    score_sz = int(30 * pop_scale)
+    score_font = pygame.font.Font(FONT_NAME, score_sz)
+    text_surf = score_font.render(score_text, True, TEXT_WHITE)
+    score_glow = score_font.render(score_text, True, (40, 180, 120, 60))
+    off = int(2 * pop_scale)
+    for dx, dy in [(-off, 0), (off, 0), (0, -off), (0, off)]:
         surf.blit(score_glow, (36 + shake_x + dx, 26 + shake_y + dy))
     surf.blit(text_surf, (36 + shake_x, 26 + shake_y))
 
+    # Points dot
     pygame.draw.circle(surf, TEXT_GLOW, (32 + shake_x, 36 + shake_y), 3)
     pygame.draw.circle(surf, (100, 255, 180, 100), (32 + shake_x, 36 + shake_y), 5, 1)
 
+    # High score
     if game.high_score > 0:
         hs_text = f"BEST: {game.high_score}"
         hs_surf = game.font_micro.render(hs_text, True, TEXT_DIM)
         surf.blit(hs_surf, (36 + shake_x, 54 + shake_y))
 
+    # Speed indicator
+    speed = game._speed_ratio
+    dots = SPEED_INDICATOR_DOTS
+    filled = int(speed * dots)
+    dot_x = 36 + shake_x
+    dot_y = 68 + shake_y
+    for d in range(dots):
+        c = TEXT_GLOW if d < filled else (40, 60, 50, 120)
+        pygame.draw.circle(surf, c, (dot_x + d * 7, dot_y), 2)
+        if d < filled:
+            pygame.draw.circle(surf, (100, 255, 180, 80), (dot_x + d * 7, dot_y), 3, 1)
 
-def draw_pause_overlay(surf, game):
+
+def draw_pause_menu(surf, game, menu_selection):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    overlay.fill((0, 0, 0, 160))
+    overlay.fill((0, 0, 0, PAUSE_BLUR_ALPHA))
     surf.blit(overlay, (0, 0))
 
-    pane_w, pane_h = 320, 180
-    pane = pygame.Surface((pane_w, pane_h), pygame.SRCALPHA)
-    for y in range(pane_h):
-        t = y / pane_h
-        a = int(200 * (1 - abs(t - 0.5) * 0.4))
-        c = (8, 12, 30, a)
-        pygame.draw.line(pane, c, (0, y), (pane_w, y))
-
+    pane_w, pane_h = 300, 260
     px = (WIDTH - pane_w) // 2
     py = (HEIGHT - pane_h) // 2
-    surf.blit(pane, (px, py))
-    pygame.draw.rect(surf, (60, 140, 100, 100), (px, py, pane_w, pane_h), 1, border_radius=8)
-    pygame.draw.rect(surf, (100, 200, 150, 40), (px + 2, py + 2, pane_w - 4, pane_h - 4), 1, border_radius=7)
+    _draw_panel(surf, px, py, pane_w, pane_h)
 
     txt = game.font_large.render("PAUSED", True, TEXT_YELLOW)
     glow = game.font_large.render("PAUSED", True, (255, 200, 80, 60))
-    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
-        surf.blit(glow, (WIDTH // 2 - txt.get_width() // 2 + dx, HEIGHT // 2 - 55 + dy))
-    r = txt.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 55))
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
+        surf.blit(glow, (WIDTH // 2 - txt.get_width() // 2 + dx, py + 20 + dy))
+    r = txt.get_rect(center=(WIDTH // 2, py + 20))
     surf.blit(txt, r)
 
-    hint = game.font_small.render("Press SPACE to resume", True, TEXT_WHITE)
-    hr = hint.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 25))
-    surf.blit(hint, hr)
+    # Score display in pause
+    score_s = game.font_small.render(f"Score: {game.score}", True, TEXT_WHITE)
+    sr = score_s.get_rect(center=(WIDTH // 2, py + 65))
+    surf.blit(score_s, sr)
 
-    hint2 = game.font_micro.render("ESC to quit", True, TEXT_DIM)
-    h2r = hint2.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 55))
-    surf.blit(hint2, h2r)
+    # Menu items
+    items = [
+        ("Resume", "SPACE"),
+        ("Settings", ""),
+        ("Restart", ""),
+        ("Quit", "ESC"),
+    ]
+    selected = min(menu_selection, len(items) - 1) if menu_selection >= 0 else 0
+    _draw_menu_items(surf, items, selected, WIDTH // 2, py + 100, game, spacing=40)
+
+    game._menu_count = len(items)
+    game._menu_selection = selected
 
 
-def draw_game_over(surf, game):
+def draw_game_over(surf, game, menu_selection, score_count_up, new_record_bounce_timer):
     overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     overlay.fill((0, 0, 0, 200))
     surf.blit(overlay, (0, 0))
 
-    pane_w, pane_h = 400, 260
+    pane_w, pane_h = 420, 320
     px = (WIDTH - pane_w) // 2
     py = (HEIGHT - pane_h) // 2
-    pane = pygame.Surface((pane_w, pane_h), pygame.SRCALPHA)
-    for y in range(pane_h):
-        t = y / pane_h
-        a = int(220 * (1 - abs(t - 0.5) * 0.5))
-        r = int(12 * (1 - t))
-        g = int(8 * (1 - t))
-        b_val = int(25 * (1 + t * 0.5))
-        c = (r, g, b_val, a)
-        pygame.draw.line(pane, c, (0, y), (pane_w, y))
-    surf.blit(pane, (px, py))
-    pygame.draw.rect(surf, (200, 60, 60, 120), (px, py, pane_w, pane_h), 1, border_radius=10)
-    pygame.draw.rect(surf, (255, 100, 80, 40), (px + 2, py + 2, pane_w - 4, pane_h - 4), 1, border_radius=9)
+    _draw_panel(surf, px, py, pane_w, pane_h, r=12, g=8, b=25, border_color=(200, 60, 60))
 
     title = game.font_large.render("GAME OVER", True, (255, 80, 80))
     title_glow = game.font_large.render("GAME OVER", True, (200, 40, 40, 80))
     for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
-        surf.blit(title_glow, (WIDTH // 2 - title.get_width() // 2 + dx, py + 30 + dy))
-    tr = title.get_rect(center=(WIDTH // 2, py + 30))
+        surf.blit(title_glow, (WIDTH // 2 - title.get_width() // 2 + dx, py + 20 + dy))
+    tr = title.get_rect(center=(WIDTH // 2, py + 20))
     surf.blit(title, tr)
 
-    score = game.font_med.render(f"Score: {game.score}", True, TEXT_WHITE)
-    sr = score.get_rect(center=(WIDTH // 2, py + 90))
-    surf.blit(score, sr)
+    # Animated score count-up
+    count = game.score if score_count_up >= game.score else score_count_up
+    score_text = f"Score: {count}"
+    score_surf = game.font_med.render(score_text, True, TEXT_WHITE)
+    sr = score_surf.get_rect(center=(WIDTH // 2, py + 80))
+    surf.blit(score_surf, sr)
 
-    if game.score >= game.high_score and game.score > 0:
-        best = game.font_small.render("NEW BEST!", True, TEXT_YELLOW)
-        bg = game.font_small.render("NEW BEST!", True, (180, 150, 50, 60))
+    # NEW RECORD bounce
+    if new_record_bounce_timer > 0:
+        bounce_t = 1.0 - new_record_bounce_timer / 1.5
+        bounce_scale = 1.0 + 0.3 * abs(math.sin(bounce_t * math.pi * 2))
+        bounce_sz = int(22 * bounce_scale)
+        bounce_font = pygame.font.Font(FONT_NAME, bounce_sz)
+        best = bounce_font.render("NEW RECORD!", True, TEXT_YELLOW)
+        bg = bounce_font.render("NEW RECORD!", True, (180, 150, 50, 60))
+        bx = WIDTH // 2
+        by = int(py + 120)
         for dx, dy in [(-1, 0), (1, 0)]:
-            surf.blit(bg, (WIDTH // 2 - best.get_width() // 2 + dx, py + 125 + dy))
-        br = best.get_rect(center=(WIDTH // 2, py + 125))
+            surf.blit(bg, (bx - best.get_width() // 2 + dx, by + dy))
+        br = best.get_rect(center=(bx, by))
         surf.blit(best, br)
 
-    hint = game.font_small.render("Press R or ENTER to restart", True, TEXT_WHITE)
-    hr = hint.get_rect(center=(WIDTH // 2, py + 180))
-    surf.blit(hint, hr)
+    # High score
+    hs = game.font_small.render(f"Best: {game.high_score}", True, TEXT_DIM)
+    hs_r = hs.get_rect(center=(WIDTH // 2, py + 155))
+    surf.blit(hs, hs_r)
 
-    hint2 = game.font_micro.render("ESC to quit", True, TEXT_DIM)
-    h2r = hint2.get_rect(center=(WIDTH // 2, py + 215))
-    surf.blit(hint2, h2r)
+    count_up_done = score_count_up >= game.score or game.score == 0
+    if count_up_done:
+        items = [
+            ("Restart", "R / ENTER"),
+            ("View Stats", ""),
+            ("Title Screen", "ESC"),
+        ]
+        selected = min(menu_selection, len(items) - 1) if menu_selection >= 0 else 0
+        _draw_menu_items(surf, items, selected, WIDTH // 2, py + 185, game, spacing=40)
+        game._menu_count = len(items)
+        game._menu_selection = selected
+    else:
+        game._menu_count = 0
+        game._menu_selection = -1
 
 
-def draw_start_screen(game):
-    surf = game.screen
-    surf.blit(game.bg_surf, (0, 0))
-    surf.blit(game.star_surf, (0, 0))
+def draw_title_screen(surf, game, menu_selection, time_float):
+    items = [
+        ("Play", ""),
+        ("Settings", ""),
+        ("Quit", ""),
+    ]
 
-    surf.blit(game._start_sun_surf, (WIDTH // 2 - 42, int(HEIGHT * 0.12 - 42)))
-
-    title = game.font_large.render("SNAKE V2", True, TEXT_WHITE)
-    gl = game.font_large.render("SNAKE V2", True, TEXT_GLOW)
-    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
-        surf.blit(gl, (WIDTH // 2 - title.get_width() // 2 + dx, HEIGHT // 2 - 85 + dy))
-    tr = title.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 85))
-    surf.blit(title, tr)
+    # Logo
+    logo = game.font_large.render("SNAKE V2", True, TEXT_WHITE)
+    glow = game.font_large.render("SNAKE V2", True, TEXT_GLOW)
+    pulse = 0.6 + 0.4 * math.sin(time_float * 1.5)
+    glow_a = int(60 * pulse)
+    glow_overlay = game.font_large.render("SNAKE V2", True, (80, 220, 150, glow_a))
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0), (-3, 0), (3, 0)]:
+        surf.blit(glow, (WIDTH // 2 - logo.get_width() // 2 + dx, 120 + dy))
+    surf.blit(glow_overlay, (WIDTH // 2 - logo.get_width() // 2, 120))
+    lr = logo.get_rect(center=(WIDTH // 2, 120))
+    surf.blit(logo, lr)
 
     subtitle = game.font_small.render("3D Hex Grid - Enhanced Edition", True, TEXT_DIM)
-    sr = subtitle.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 40))
+    sr = subtitle.get_rect(center=(WIDTH // 2, 175))
     surf.blit(subtitle, sr)
 
-    instructions = [
-        ("A / LEFT ARROW", "Turn left"),
-        ("D / RIGHT ARROW", "Turn right"),
-        ("SPACE", "Pause"),
-        ("ESC", "Quit"),
-    ]
-    for i, (key, action) in enumerate(instructions):
-        key_surf = game.font_micro.render(key, True, TEXT_GLOW)
-        act_surf = game.font_micro.render(action, True, TEXT_DIM)
-        kx = WIDTH // 2 - 120
-        ax = WIDTH // 2 + 20
-        iy = HEIGHT // 2 + 5 + i * 25
-        surf.blit(key_surf, (kx, iy))
-        surf.blit(act_surf, (ax, iy))
+    # Stats line
+    stats = game.persistence.get_stats()
+    hs = game.persistence.get_high_score()
+    if hs > 0 or stats['games_played'] > 0:
+        st = f"Best: {hs}  |  Games: {stats['games_played']}  |  Longest: {stats['longest_snake']}"
+        stats_surf = game.font_micro.render(st, True, TEXT_DIM)
+        ssr = stats_surf.get_rect(center=(WIDTH // 2, 200))
+        surf.blit(stats_surf, ssr)
 
-    hint = game.font_small.render("Press any key to start", True, TEXT_YELLOW)
-    hr = hint.get_rect(center=(WIDTH // 2, HEIGHT // 2 + 160))
-    pulse = int(abs(math.sin(pygame.time.get_ticks() * 0.003)) * 120)
-    hint.set_alpha(130 + pulse)
+    menu_y = 260
+    selected = min(menu_selection, len(items) - 1) if menu_selection >= 0 else 0
+    _draw_menu_items(surf, items, selected, WIDTH // 2, menu_y, game, spacing=50)
+
+    # Footer hint
+    hint = game.font_micro.render("Arrow keys to navigate, Enter to select", True, TEXT_DIM)
+    hr = hint.get_rect(center=(WIDTH // 2, HEIGHT - 40))
+    hint.set_alpha(100 + int(55 * math.sin(time_float * 1.2)))
     surf.blit(hint, hr)
+
+    game._menu_count = len(items)
+    game._menu_selection = selected
+
+
+def draw_settings_screen(surf, game, menu_selection, settings, time_float, from_pause):
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 180))
+    surf.blit(overlay, (0, 0))
+
+    pane_w, pane_h = 500, 520
+    px = (WIDTH - pane_w) // 2
+    py = (HEIGHT - pane_h) // 2
+    _draw_panel(surf, px, py, pane_w, pane_h, alpha=200, border_color=(60, 140, 200))
+
+    title = game.font_large.render("SETTINGS", True, TEXT_GLOW)
+    glow = game.font_large.render("SETTINGS", True, (40, 180, 120, 60))
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
+        surf.blit(glow, (WIDTH // 2 - title.get_width() // 2 + dx, py + 15 + dy))
+    tr = title.get_rect(center=(WIDTH // 2, py + 15))
+    surf.blit(title, tr)
+
+    # Build menu items
+    vol_suffix = lambda v: f"[{int(v * 100)}%]"
+    toggle_suffix = lambda v: "[ON]" if v else "[OFF]"
+
+    items = [
+        (f"Music    {vol_suffix(settings['music_volume'])}", "<  >"),
+        (f"SFX      {vol_suffix(settings['sfx_volume'])}", "<  >"),
+        (f"Ambience {vol_suffix(settings['ambience_volume'])}", "<  >"),
+        (f"Bloom    {toggle_suffix(settings['bloom'])}", ""),
+        (f"Tone Map {toggle_suffix(settings['tone_map'])}", ""),
+        (f"God Rays {toggle_suffix(settings['god_rays'])}", ""),
+        (f"Vignette {toggle_suffix(settings['vignette'])}", ""),
+        (f"Film Grain {toggle_suffix(settings['film_grain'])}", ""),
+        (f"Show FPS {toggle_suffix(settings['show_fps'])}", ""),
+        (f"Back", ""),
+    ]
+
+    selected = min(menu_selection, len(items) - 1) if menu_selection >= 0 else 0
+    _draw_menu_items(surf, items, selected, px + 30, py + 65, game, spacing=38, align_center=False)
+
+    hint = game.font_micro.render("< > adjust values     ENTER toggles     ESC to go back", True, TEXT_DIM)
+    hr = hint.get_rect(center=(WIDTH // 2, py + pane_h - 25))
+    surf.blit(hint, hr)
+
+    game._menu_count = len(items)
+    game._menu_selection = selected
 
 
 def draw_minimap(surf, snake, apple, game):
     size = MINIMAP_SIZE
     pad = MINIMAP_PADDING
+    mx = WIDTH - size - pad
+    my = HEIGHT - size - pad
     mini = pygame.Surface((size, size), pygame.SRCALPHA)
-    mini.fill((0, 0, 0, MINIMAP_ALPHA))
+    mini.fill((5, 8, 22, MINIMAP_ALPHA))
 
-    hexes = list(all_hexes())
+    hexes = all_hexes()
     if not hexes:
         return
 
@@ -203,4 +337,108 @@ def draw_minimap(surf, snake, apple, game):
             r_dot = 2
         pygame.draw.circle(mini, color, (int(dx), int(dy)), r_dot)
 
-    surf.blit(mini, (pad, pad))
+    surf.blit(mini, (mx, my))
+    pygame.draw.rect(surf, (50, 130, 90, 120), (mx, my, size, size), 1, border_radius=4)
+    pygame.draw.rect(surf, (80, 180, 130, 30), (mx + 2, my + 2, size - 4, size - 4), 1, border_radius=3)
+
+
+def draw_stats_overlay(surf, game):
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 220))
+    surf.blit(overlay, (0, 0))
+
+    pane_w, pane_h = 460, 440
+    px = (WIDTH - pane_w) // 2
+    py = (HEIGHT - pane_h) // 2
+    _draw_panel(surf, px, py, pane_w, pane_h, alpha=200, border_color=(60, 140, 200))
+
+    title = game.font_med.render("STATISTICS", True, TEXT_GLOW)
+    tr = title.get_rect(center=(WIDTH // 2, py + 25))
+    surf.blit(title, tr)
+
+    stats = game.persistence.get_stats()
+    top_scores = game.persistence.get_top_scores()
+
+    lines = [
+        f"Games Played:    {stats['games_played']}",
+        f"Apples Eaten:    {stats['apples_eaten']}",
+        f"Total Play Time: {_fmt_time(stats['total_play_time'])}",
+        f"Longest Snake:   {stats['longest_snake']}",
+    ]
+
+    y_off = py + 60
+    for line in lines:
+        ls = game.font_small.render(line, True, TEXT_WHITE)
+        surf.blit(ls, (px + 40, y_off))
+        y_off += 30
+
+    # Top scores
+    y_off += 10
+    hdr = game.font_small.render("Best Scores", True, TEXT_YELLOW)
+    surf.blit(hdr, (px + 40, y_off))
+    y_off += 30
+    if top_scores:
+        for i, entry in enumerate(top_scores):
+            ds = game.font_micro.render(
+                f"{i + 1}.  {entry['score']}  ({_fmt_date(entry['date'])})",
+                True, TEXT_DIM,
+            )
+            surf.blit(ds, (px + 50, y_off))
+            y_off += 22
+    else:
+        no = game.font_micro.render("No scores yet", True, TEXT_DIM)
+        surf.blit(no, (px + 50, y_off))
+
+    hint = game.font_micro.render("Press ESC or ENTER to go back", True, TEXT_DIM)
+    hr = hint.get_rect(center=(WIDTH // 2, py + pane_h - 20))
+    surf.blit(hint, hr)
+
+
+def _fmt_time(seconds):
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = int(seconds % 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    elif m > 0:
+        return f"{m}m {s}s"
+    else:
+        return f"{s}s"
+
+
+def _fmt_date(iso_str):
+    try:
+        parts = iso_str.split('T')[0].split('-')
+        return f"{parts[1]}/{parts[2]}/{parts[0][2:]}"
+    except Exception:
+        return iso_str[:10]
+
+
+def draw_debug_overlay(surf, game):
+    timings = game._perf_timings
+    fps = game.clock.get_fps()
+
+    lines = [
+        f"FPS: {fps:.1f}",
+        f"Tiles: {timings.get('tiles', 0):.2f}ms",
+        f"Snake: {timings.get('snake', 0):.2f}ms",
+        f"Particles: {timings.get('particles', 0):.2f}ms",
+        f"Post-FX: {timings.get('post', 0):.2f}ms",
+        f"UI: {timings.get('ui', 0):.2f}ms",
+        f"Total: {timings.get('total', 0):.2f}ms",
+    ]
+
+    panel_w = 220
+    panel_h = 20 + len(lines) * 20
+
+    px = WIDTH - panel_w - 10
+    py = 10
+    _draw_panel(surf, px, py, panel_w, panel_h, alpha=160)
+
+    for i, line in enumerate(lines):
+        color = TEXT_WHITE if i == 0 else TEXT_DIM
+        if i == 0:
+            label_surf = game.font_micro.render(line, True, TEXT_GLOW)
+        else:
+            label_surf = game.font_micro.render(line, True, color)
+        surf.blit(label_surf, (px + 8, py + 8 + i * 20))

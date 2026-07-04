@@ -4,7 +4,6 @@ import pygame
 from config import *
 
 
-
 class Particle:
     def __init__(self, x, y, z, vx, vy, vz, color, size, lifetime, particle_type='normal'):
         self.x = x
@@ -22,12 +21,23 @@ class Particle:
         self.rot_speed = random.uniform(-2, 2)
 
     def update(self, dt):
+        # Physics
+        self.vz -= PARTICLE_GRAVITY * dt
+        self.vx *= PARTICLE_AIR_DRAG
+        self.vy *= PARTICLE_AIR_DRAG
+
         self.x += self.vx * dt
         self.y += self.vy * dt
         self.z += self.vz * dt
-        self.vz -= 9.8 * dt * 0.3
-        self.vx *= 0.99
-        self.vy *= 0.99
+
+        # Ground bounce
+        if self.z < 0:
+            self.z = 0
+            self.vz = -self.vz * PARTICLE_BOUNCE
+            # Ground friction
+            self.vx *= PARTICLE_GROUND_FRICTION
+            self.vy *= PARTICLE_GROUND_FRICTION
+
         self.age += dt
         self.rotation += self.rot_speed * dt
 
@@ -130,6 +140,73 @@ class ParticlePool:
         p.rot_speed = random.uniform(-2, 2)
         self._alive.append(p)
         return p
+
+    def emit_apple_burst(self, cx, cy, cz):
+        """Juicy splash with sparks on apple eat."""
+        for _ in range(20):
+            angle = random.uniform(0, math.tau)
+            speed = random.uniform(2, 6)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed * 0.6
+            vz = random.uniform(2, 5)
+            color = random.choice(PARTICLE_COLORS)
+            size = random.uniform(2, 4)
+            lifetime = random.uniform(0.6, 1.8)
+            ox = random.uniform(-4, 4)
+            oy = random.uniform(-4, 4)
+            self.emit(cx + ox, cy + oy, cz, vx, vy, vz, color, size, lifetime, 'glow')
+        for _ in range(10):
+            angle = random.uniform(0, math.tau)
+            speed = random.uniform(4, 8)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed * 0.5
+            vz = random.uniform(3, 6)
+            self.emit(cx, cy, cz, vx, vy, vz, (255, 255, 200), random.uniform(1, 2), random.uniform(0.3, 0.8), 'spark')
+
+    def emit_movement_dust(self, cx, cy, cz, dir_x, dir_y):
+        """Faint puffs kicked up when the snake changes direction."""
+        for _ in range(3):
+            angle = random.uniform(0, math.tau)
+            speed = random.uniform(0.3, 0.8)
+            vx = math.cos(angle) * speed + dir_x * 0.2
+            vy = math.sin(angle) * speed + dir_y * 0.2
+            vz = random.uniform(0.1, 0.3)
+            color = (160, 190, 150)
+            size = random.uniform(1, 2)
+            lifetime = random.uniform(0.4, 0.8)
+            self.emit(cx, cy, cz, vx, vy, vz, color, size, lifetime)
+
+    def emit_death_burst(self, cx, cy, cz):
+        """Dramatic burst on snake death."""
+        for _ in range(40):
+            angle = random.uniform(0, math.tau)
+            speed = random.uniform(3, 10)
+            vx = math.cos(angle) * speed
+            vy = math.sin(angle) * speed * 0.7
+            vz = random.uniform(2, 8)
+            color = random.choice([
+                (220, 60, 60), (200, 40, 40), (255, 100, 80),
+                (180, 50, 50), (255, 80, 60), (100, 220, 120),
+            ])
+            size = random.uniform(2, 5)
+            lifetime = random.uniform(0.5, 1.5)
+            ox = random.uniform(-6, 6)
+            oy = random.uniform(-6, 6)
+            pt = 'glow' if random.random() < 0.3 else 'spark'
+            self.emit(cx + ox, cy + oy, cz, vx, vy, vz, color, size, lifetime, pt)
+
+    def emit_ambient_mote(self, cx, cy, cz):
+        """Drifting ambient mote or firefly."""
+        vx = random.uniform(-0.12, 0.12)
+        vy = random.uniform(-0.06, 0.06)
+        vz = random.uniform(0.01, 0.06)
+        is_firefly = random.random() < 0.3
+        if is_firefly:
+            c = random.choice([(180, 230, 100), (220, 255, 150), (200, 240, 120)])
+            self.emit(cx, cy, cz, vx, vy, vz, c, random.uniform(2, 3.5), random.uniform(4, 8), 'glow')
+        else:
+            c = random.choice([(50, 160, 140), (70, 190, 155), (90, 210, 170), (40, 140, 130)])
+            self.emit(cx, cy, cz, vx, vy, vz, c, random.uniform(1, 2), random.uniform(3, 7))
 
     def update_all(self, dt):
         for p in self._alive:

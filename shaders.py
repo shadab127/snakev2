@@ -15,14 +15,15 @@ out vec4 f_color;
 uniform float u_time_float;
 uniform int u_game_over;
 uniform float u_eat_flash;
+uniform vec3 u_light_dir;
+uniform float u_ambient;
+uniform vec3 u_sun_color;
+uniform vec3 u_fog_color;
 
-const vec3 LIGHT_DIR = vec3(0.436, -0.524, 0.699);
-const float AMBIENT_LIGHT_VAL = 0.25;
-const float SUN_ANGLE_SPEED = 0.03;
-const vec3 FOG_COLOR = vec3(0.110, 0.157, 0.275);
 const vec3 GAME_OVER_TOP = vec3(0.039, 0.098, 0.078);
 const vec3 GAME_OVER_SIDE = vec3(0.024, 0.055, 0.047);
 const vec3 TILE_GLOW = vec3(0.314, 0.863, 0.588);
+const vec3 TILE_EDGE_EMISSIVE = vec3(0.078, 0.235, 0.118);
 
 void main() {
     vec3 base_c = v_base_color;
@@ -33,19 +34,20 @@ void main() {
             base_c = GAME_OVER_SIDE;
         }
     } else if (u_eat_flash > 0.0) {
-        float flash = min(1.0, u_eat_flash / 12.0);
+        float flash = min(1.0, u_eat_flash / 0.2);
         vec3 flash_c = TILE_GLOW * 0.3;
         base_c = mix(base_c, flash_c, flash * 0.5);
+        base_c += TILE_EDGE_EMISSIVE * flash * 0.5;
     }
 
-    float sun_factor = 0.85 + 0.15 * sin(u_time_float * SUN_ANGLE_SPEED + v_q * 0.5 + v_r * 0.3);
-    float diff = max(0.0, dot(v_normal, LIGHT_DIR));
-    float light = (AMBIENT_LIGHT_VAL + (1.0 - AMBIENT_LIGHT_VAL) * diff) * sun_factor * v_dist_factor * v_ao;
+    float sun_factor = 0.85 + 0.15 * sin(u_time_float * 0.03 + v_q * 0.5 + v_r * 0.3);
+    float diff = max(0.0, dot(v_normal, u_light_dir));
+    float light = (u_ambient + (1.0 - u_ambient) * diff) * sun_factor * v_dist_factor * v_ao;
 
     vec3 color = base_c * light;
 
     float fog_t = clamp((v_fog_depth - 350.0) / 850.0, 0.0, 1.0);
-    color = mix(color, FOG_COLOR, fog_t * 0.35);
+    color = mix(color, u_fog_color, fog_t * 0.35);
     color *= v_tex_var;
 
     f_color = vec4(color, 1.0);
@@ -132,6 +134,7 @@ in vec2 v_uv;
 out vec4 f_color;
 uniform sampler2D u_tex;
 uniform vec2 u_texel_size;
+uniform float u_bloom_threshold;
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 void main() {
     vec2 ts = u_texel_size;
@@ -142,7 +145,7 @@ void main() {
     color += texture(u_tex, v_uv + vec2( ts.x,  ts.y));
     color *= 0.25;
     float luma = dot(color.rgb, LUMA);
-    float bright = max(0.0, luma - 0.25);
+    float bright = max(0.0, luma - u_bloom_threshold);
     f_color = vec4(color.rgb * bright, 1.0);
 }
 '''
@@ -169,6 +172,43 @@ void main() {
 }
 '''
 
+GL_TONE_MAP_FS = '''
+#version 330
+in vec2 v_uv;
+out vec4 f_color;
+uniform sampler2D u_tex;
+const float A = 0.22;
+const float B = 0.30;
+const float C = 0.10;
+const float D = 0.20;
+const float E = 0.01;
+const float F = 0.30;
+const float W = 11.2;
+vec3 uncharted2(vec3 x) {
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+void main() {
+    vec3 color = texture(u_tex, v_uv).rgb;
+    vec3 mapped = uncharted2(color * 1.6) / uncharted2(vec3(W));
+    f_color = vec4(clamp(mapped, 0.0, 1.0), 1.0);
+}
+'''
+
+GL_FILM_GRAIN_FS = '''
+#version 330
+in vec2 v_uv;
+out vec4 f_color;
+uniform sampler2D u_tex;
+uniform float u_grain_strength;
+uniform float u_time;
+void main() {
+    vec4 color = texture(u_tex, v_uv);
+    float grain = fract(sin(dot(v_uv + u_time, vec2(12.9898, 78.233))) * 43758.5453);
+    float noise = (grain - 0.5) * u_grain_strength;
+    f_color = vec4(color.rgb + noise, color.a);
+}
+'''
+
 GL_BLOOM_UP_FS = '''
 #version 330
 in vec2 v_uv;
@@ -188,6 +228,7 @@ in vec2 v_uv;
 out vec4 f_color;
 uniform vec2 u_sun_pos;
 uniform float u_time;
+uniform vec3 u_sun_color;
 void main() {
     vec2 dir = v_uv - u_sun_pos;
     float dist = length(dir);
@@ -201,7 +242,8 @@ void main() {
         rays += pow(d, 8.0) * max(0.0, 1.0 - dist * 0.5);
     }
     rays *= max(0.0, 1.0 - dist * 0.8);
-    f_color = vec4(vec3(0.78, 0.86, 1.0) * rays * 0.35, rays * 0.3);
+    vec3 ray_color = u_sun_color / 255.0;
+    f_color = vec4(ray_color * rays * 0.35, rays * 0.3);
 }
 '''
 
@@ -231,19 +273,18 @@ in vec2 v_uv;
 in float v_wave;
 out vec4 f_color;
 uniform float u_time;
-const vec3 WC1 = vec3(0.024, 0.078, 0.196);
-const vec3 WC2 = vec3(0.047, 0.137, 0.275);
-const vec3 WH = vec3(0.196, 0.510, 0.784);
+uniform vec3 u_water_color;
+uniform vec3 u_water_highlight;
 void main() {
     float t = v_uv.y;
-    vec3 c = mix(WC1, WC2, t);
+    vec3 c = mix(u_water_color / 255.0, vec3(0.047, 0.137, 0.275), t);
     float fresnel = 0.3 + 0.7 * pow(1.0 - abs(t - 0.5) * 2.0, 2.0);
     float a = 190.0 * fresnel / 255.0;
     float hl = 0.0;
     if (int(v_uv.x * 100.0) % 4 == 0) {
         hl = 50.0 * fresnel * (0.5 + 0.5 * sin(u_time * 1.2 + v_uv.y * 50.0));
     }
-    c += WH * hl / 255.0;
+    c += u_water_highlight * hl / 255.0 / 255.0;
     f_color = vec4(c, a);
 }
 '''
