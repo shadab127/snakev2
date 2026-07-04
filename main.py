@@ -233,8 +233,8 @@ class SnakeGame:
             base_top_color = list(lerp_color(tuple(base_top_color), TILE_TOP_LIGHT, worn))
 
         final_tri_color = tuple(base_top_color)
-        dist = math.hypot(cx - self.camera.x, cy - self.camera.y)
-        fog_t = max(0, min(1, (dist - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
+        _, _, depth = self.camera.project(cx, cy, 0)
+        fog_t = max(0, min(1, (depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
         if fog_t > 0:
             final_tri_color = lerp_color(tuple(final_tri_color), FOG_COLOR, fog_t * 0.35)
         tex_variation = 1.0 + 0.06 * noise['tex']
@@ -506,8 +506,8 @@ class SnakeGame:
         diff = max(0.0, dot3(face_normal, LIGHT_DIR))
         light = (AMBIENT_LIGHT + (1.0 - AMBIENT_LIGHT) * diff) * sun_factor * dist_factor * ao
         final_tri_color = mul_color(tuple(base_top_color), light)
-        dist = math.hypot(cx - self.camera.x, cy - self.camera.y)
-        fog_t = max(0, min(1, (dist - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
+        _, _, depth = self.camera.project(cx, cy, 0)
+        fog_t = max(0, min(1, (depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
         if fog_t > 0:
             final_tri_color = lerp_color(tuple(final_tri_color), FOG_COLOR, fog_t * 0.35)
         tex_variation = 1.0 + 0.06 * noise['tex']

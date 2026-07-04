@@ -179,7 +179,7 @@ class GLRenderer:
                     base_top_color[ci] = max(0, min(255, base_top_color[ci] + noise_offset))
                 if (q, r) in snake_set:
                     base_top_color = list(lerp_color(tuple(base_top_color), TILE_TOP_LIGHT, 0.15))
-                fog_depth = math.hypot(cx - game.camera.x, cy - game.camera.y)
+                fog_depth = game.camera.project(cx, cy, 0)[2]
                 tex_variation = 1.0 + 0.06 * noise['tex']
                 ftop_norm = tuple(c / 255.0 for c in base_top_color)
                 fside_norm = tuple(c / 255.0 for c in base_side_color)
