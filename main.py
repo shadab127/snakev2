@@ -1138,6 +1138,71 @@ class SnakeGame:
         scaled.set_alpha(int(alpha))
         surf.blit(scaled, (int(sx - shadow_size // 2), int(sy - shadow_size // 2)))
 
+    def draw_snake_body(self, surf, time_float):
+        if not hasattr(self, '_render_spline_positions') or not self._render_spline_positions:
+            return
+
+        positions = self._render_spline_positions
+        n_pts = len(positions)
+        
+        # Body pulse and base thickness
+        body_pulse = 1.0 + 0.03 * math.sin(time_float * 2)
+        
+        for i in range(n_pts - 1):
+            p1 = positions[i]
+            p2 = positions[i+1]
+            
+            cx1, cy1, tx1, ty1 = p1
+            cx2, cy2, tx2, ty2 = p2
+            
+            # Width tapering: Wide head, slight swell, smooth taper to tail
+            t = i / max(1, n_pts - 1)
+            thickness_factor = 1.0 - (t**1.2) * 0.5
+            thickness_factor += 0.05 * math.sin(t * math.pi * 2) # Subtle organic ripple
+            
+            w1 = (HEX_SIZE * SNAKE_SEGMENT_SCALE * 0.5) * thickness_factor * body_pulse
+            
+            # Interpolate width for the next point
+            t_next = (i + 1) / max(1, n_pts - 1)
+            thickness_factor_next = 1.0 - (t_next**1.2) * 0.5
+            thickness_factor_next += 0.05 * math.sin(t_next * math.pi * 2)
+            w2 = (HEX_SIZE * SNAKE_SEGMENT_SCALE * 0.5) * thickness_factor_next * body_pulse
+            
+            # Use the tangent for the perpendicular vector
+            perp_x1, perp_y1 = -ty1, tx1
+            perp_x2, perp_y2 = -ty2, tx2
+            
+            # Ribbon vertices in world space
+            v1 = (cx1 + perp_x1 * w1, cy1 + perp_y1 * w1, 0)
+            v2 = (cx2 + perp_x2 * w2, cy2 + perp_y2 * w2, 0)
+            v3 = (cx2 - perp_x2 * w2, cy2 - perp_y2 * w2, 0)
+            v4 = (cx1 - perp_x1 * w1, cy1 - perp_y1 * w1, 0)
+            
+            # Project to screen
+            screen_pts = []
+            for wx, wy, wz in [v1, v2, v3, v4]:
+                sx, sy, _ = self.camera.project(wx, wy, wz)
+                screen_pts.append((int(sx), int(sy)))
+            
+            # Smooth color interpolation along the snake length
+            color_t = t * (len(SNAKE_COLORS) - 1)
+            c_idx1 = int(color_t)
+            c_idx2 = min(c_idx1 + 1, len(SNAKE_COLORS) - 1)
+            local_t = color_t - c_idx1
+            base_color = lerp_color(SNAKE_COLORS[c_idx1], SNAKE_COLORS[c_idx2], local_t)
+            
+            # Smooth transition from HEAD_COLOR at the very front
+            if t < 0.1:
+                head_blend = t / 0.1
+                base_color = lerp_color(HEAD_COLOR, base_color, head_blend)
+            
+            diff = max(0.0, self._light_dir[2])
+            light = self._ambient + (1.0 - self._ambient) * diff
+            c = mul_color(base_color, light)
+            c = add_color(c, mul_color(self._sun_color, light * 0.2))
+            
+            pygame.draw.polygon(surf, c, screen_pts)
+
     def draw_snake_segment(self, surf, idx, q, r, time_float):
         if not hasattr(self, '_spline_positions') or not self._spline_positions:
             return
@@ -1182,45 +1247,6 @@ class SnakeGame:
         sx, sy, depth = self.camera.project(cx, cy, 0)
         self.draw_shadow(surf, cx, cy, 0, int(sz * 0.5))
 
-        # Continuous body strip between consecutive segments
-        if idx < len(self.snake) - 1 and idx + 1 < len(self._spline_positions):
-            npx, npy, _, _ = self._spline_positions[idx + 1]
-            dx_s = npx - cx
-            dy_s = npy - cy
-            d_len = math.hypot(dx_s, dy_s)
-            if d_len > 0.001 and sz > 2:
-                perp_x = -dy_s / d_len
-                perp_y = dx_s / d_len
-
-                nt = (idx + 1) / max(1, len(self.snake) - 1)
-                nthick = 1.0 - nt * 0.25
-                nthick *= (1.0 + 0.15 * math.sin(nt * math.pi))
-                next_sz = int(HEX_SIZE * SNAKE_SEGMENT_SCALE * nthick * body_pulse)
-                if next_sz < 2:
-                    next_sz = sz
-
-                half_w = int(sz * 0.45)
-                next_half_w = int(next_sz * 0.45)
-
-                strip_pts = [
-                    (cx + perp_x * half_w, cy + perp_y * half_w, 0),
-                    (npx + perp_x * next_half_w, npy + perp_y * next_half_w, 0),
-                    (npx - perp_x * next_half_w, npy - perp_y * next_half_w, 0),
-                    (cx - perp_x * half_w, cy - perp_y * half_w, 0),
-                ]
-                screen_pts = []
-                for wx, wy, wz in strip_pts:
-                    sx_p, sy_p, _ = self.camera.project(wx, wy, wz)
-                    screen_pts.append((int(sx_p), int(sy_p)))
-
-                if len(screen_pts) == 4:
-                    base_color = HEAD_COLOR if idx == 0 else SNAKE_COLORS[color_idx]
-                    diff = max(0.0, self._light_dir[2])
-                    light = self._ambient + (1.0 - self._ambient) * diff
-                    c = mul_color(base_color, light)
-                    c = add_color(c, mul_color(self._sun_color, light * 0.2))
-                    pygame.draw.polygon(surf, c, screen_pts)
-
         if idx == 0:
             sz = int(sz * HEAD_SCALE)
 
@@ -1233,11 +1259,11 @@ class SnakeGame:
             if squash != 1.0 or stretch != 1.0:
                 sprite = pygame.transform.scale(sprite, (int(sz * squash), int(sz * stretch)))
         else:
-            sprite = self._body_sprites[color_idx].get(sz)
-            if sprite is None:
-                sprite = pygame.transform.smoothscale(self.master_body_sprites[color_idx], (sz, sz))
-                self._body_sprites[color_idx][sz] = sprite
-        surf.blit(sprite, (int(sx - sz * squash // 2), int(sy - sz * stretch // 2)))
+            # Body sprites removed in favor of ribbon rendering
+            sprite = None
+
+        if sprite:
+            surf.blit(sprite, (int(sx - sz * squash // 2), int(sy - sz * stretch // 2)))
 
         if idx == 0:
             dir_len = math.hypot(tx, ty)
@@ -1527,6 +1553,17 @@ class SnakeGame:
             ax, ay = hex_to_pixel(*self.apple)
             _, _, depth = self.camera.project(ax, ay, 0.5)
             draw_items.append((depth, 'apple'))
+        
+        if len(self.path_history) >= 2:
+            # Logic sampling (low res)
+            self._spline_positions = sample_spline_path(list(self.path_history), len(self.snake))
+            self._spline_positions.reverse()
+            # Render sampling (high res)
+            self._render_spline_positions = sample_spline_path(list(self.path_history), len(self.snake) * 10)
+            self._render_spline_positions.reverse()
+        else:
+            self._spline_positions = None
+            self._render_spline_positions = None
 
         for idx, (q, r) in enumerate(self.snake):
             if self._spline_positions and idx < len(self._spline_positions):
@@ -1535,9 +1572,15 @@ class SnakeGame:
                 cx, cy = hex_to_pixel(q, r)
             _, _, depth = self.camera.project(cx, cy, 0)
             draw_items.append((depth, 'snake', idx, q, r))
-
+        
         draw_list = self._build_depth_buckets(draw_items)
-
+        
+        # Draw the body ribbon first (it's one continuous object)
+        # Since it's a ribbon, we can draw it in one go if we don't need depth sorting per segment.
+        # However, to keep it consistent with other items, we can just draw it once.
+        # The body ribbon generally shares the same depth as the snake segments.
+        self.draw_snake_body(self.draw_cache, time_float)
+        
         for item in draw_list:
             if item[1] == 'apple':
                 self.draw_apple(self.draw_cache, time_float)
