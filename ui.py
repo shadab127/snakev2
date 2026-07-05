@@ -314,15 +314,22 @@ def draw_minimap(surf, snake, apple, game):
     draw_size = size - 2 * margin
     scale = min(draw_size / range_x, draw_size / range_y) * 0.9
 
-    cx = (min_x + max_x) / 2
-    cy = (min_y + max_y) / 2
+    # Center on snake head and rotate to match camera view direction
+    head = snake[0] if snake else (0, 0)
+    hx, hy = hex_to_pixel(*head)
+    yaw = game.camera._yaw
+    rot = -(yaw + math.pi / 2)
+    cos_r = math.cos(rot)
+    sin_r = math.sin(rot)
 
     snake_set = set(snake) if snake else set()
 
     for q, r in hexes:
         px, py = hex_to_pixel(q, r)
-        dx = (px - cx) * scale + size / 2
-        dy = (py - cy) * scale + size / 2
+        rx = px - hx
+        ry = py - hy
+        dx = (rx * cos_r - ry * sin_r) * scale + size / 2
+        dy = (rx * sin_r + ry * cos_r) * scale + size / 2
         if (q, r) == apple:
             color = (255, 60, 60)
             r_dot = 4
