@@ -1,55 +1,51 @@
-# SnakeV2 — Visual & World-Physics Fix Plan (v4)
+# SnakeV2 — Fix Plan v5
 
-Previous plan (v3) built the frame checker and got the scene visible, but the game
-is still bad to play. This plan fixes what a real play session shows today.
+Read this file fully, then do ONLY your assigned phase.
 
 ## Verified problems (2026-07-05, screenshots in this folder)
 
-1. **Turning blows the view apart.** `symptom_turn_blowup.png`: during a turn,
-   huge dark wedges and a tan "bowtie" tear across the sky, blue streaks smear the
-   left edge. Proven cause: the projection function does not reject points
-   **behind the camera** — they come back as valid-looking screen coordinates
-   (mirrored). Any polygon with one vertex behind the camera (water bands, tile
-   faces, body strips) draws as a giant garbage triangle. It only happens while
-   the camera swings, which is why steady screenshots pass.
-2. **The snake is not recognizable.** `symptom_straight.png`: the body is a flat,
-   unshaded light-green 2D ribbon painted on the tiles with an oversized glossy
-   sphere as the head. A "rectangular block with a dumb sphere" — accurate.
-   (A commit on 2026-07-05 made the ribbon bend smoothly and removed the extra
-   ball sprites; it is still a flat ribbon, not a body.)
-3. **Sky/sun/water are not world-anchored.** The sun disc is blitted at a fixed
-   screen position and the water is a stack of screen-projected strips, so when
-   the camera yaws they swing or stay put incoherently.
-4. **Checker gaps let all this through.** The checker only screenshots steady
-   moments — never mid-turn — and two of its checks are failing right now
-   (gameplay luma 29.9 vs 40–110, game-over luma 7.9 vs ≥ 8) yet phases were
-   marked done anyway.
+Screenshots: `symptom_straight.png`, `symptom_long_turn.png`.
 
-## Rules (every phase, every agent — no exceptions)
+1. **Motion is not smooth.** The snake teleports one cell per move step
+   (~7 times/second) while the camera glides. Cause: `move_lerp` is computed in
+   the run loop but **never used** — no drawing code reads it. Raw FPS is fine
+   (100+); the judder is discrete stepping, not slow rendering.
+2. **Body is a bead chain, and too long.** The body renders as overlapping
+   sphere sprites (beads). Worse: spline samples spread over the whole
+   `path_history`, which is longer than the snake — in `symptom_long_turn.png`
+   a 13-segment snake renders as ~25 beads spanning the map.
+3. **Turn garbage remains.** `symptom_long_turn.png` top-left: blue striped
+   wedge (water strips leaking into the sky — only strip centers are culled,
+   not endpoints). Middle: solid black band under the body (the continuous
+   shadow polygon self-intersects when the path bends).
+4. **Tiles look like separate blocks.** Every tile is an extruded prism with
+   deep dark grooves on all sides; the snake appears to run in a canyon between
+   blocks ("blocks holding the snake"). Terrain should read as one surface.
+5. The checker currently prints ALL PASS — it cannot see any of the above.
+   Each phase below adds the check that would have caught its bug.
 
-1. One phase per session, in numeric order. Read `AGENTS.md` first.
-2. Run `python dev/check_frames.py` before and after your change.
-   **If the checker exits non-zero after your change, the phase is NOT done** —
-   fix it or revert. "Most checks pass" does not exist; the exit code decides.
-   (The two luma FAILs above are pre-existing; phases state when they must turn
-   green. Never introduce a new FAIL.)
-3. Never loosen a checker threshold or delete a check. Adding checks is allowed
-   only where a phase says so.
-4. pygame-only must work; ModernGL stays optional.
-5. Tunables in `config.py`. No full-screen additive overlays (this killed the
-   game twice).
-6. `python -m pytest tests/ -q` stays green. One-line `CHANGELOG.md` entry per phase.
-7. Small diffs. Stay in scope. Do not start the next phase.
+## Rules — read twice, follow exactly
 
-## Phase index (strictly sequential)
+1. Do ONLY what your phase file lists under Scope. If you think something else
+   needs fixing, write it in the changelog note — do not fix it.
+2. Touch ONLY the files your phase lists. No new files unless listed.
+3. Before starting AND before declaring done, run BOTH:
+   - `python dev/check_frames.py`  (must exit 0 when you finish)
+   - `python -m pytest tests/ -q`  (must pass)
+   If `python` lacks pygame, use `.venv/bin/python`.
+4. Never loosen, skip, or delete a checker check. Add only what your phase says.
+5. Look at the screenshots your phase tells you to save. If the picture does
+   not match the acceptance description, the phase is not done.
+6. No full-screen additive overlays. Tunables go in `config.py`.
+7. One short `CHANGELOG.md` entry when done. Small diffs.
 
-| Phase | Title | Fixes |
-|---|---|---|
-| 01 | Checker: turn-sequence capture | the escape route |
-| 02 | Near-plane projection correctness | turn blow-up (root) |
-| 03 | Sky, sun, water world-anchoring | incoherent backdrop |
-| 04 | Camera turn motion | disorienting swing |
-| 05 | Snake body: rounded shaded tube | "block + sphere" snake |
-| 06 | Snake grounding & motion feel | floating/physics feel |
-| 07 | Exposure: clear the last checker reds | dark scene, dark game-over |
-| 08 | Human playability sign-off | final gate |
+## Phases (strict order, one per session)
+
+| Phase | Fixes problem |
+|---|---|
+| 01 | #1 — smooth per-frame motion via move_lerp |
+| 02 | #2 — correct body length, one tube instead of beads |
+| 03 | #3 — kill water wedge + shadow band |
+| 04 | #4 — terrain reads as one surface |
+| 05 | frame pacing on a real display |
+| 06 | human sign-off |
