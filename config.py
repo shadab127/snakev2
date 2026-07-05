@@ -153,6 +153,9 @@ MINIMAP_ALPHA = 180
 
 FONT_NAME = None
 
+# Phase 05 — Frame pacing
+VSYNC_ENABLED = True
+
 # Audio
 AUDIO_ENABLED = True
 MUSIC_VOLUME = 0.5
@@ -163,6 +166,9 @@ AUDIO_FADE_TIME = 0.5
 # Phase 03 — Spline motion
 SEGMENT_SPACING = 0.35
 MAX_PATH_LENGTH = 60
+
+# Phase 04 — Terrain surface (interior edges get no outline gap)
+TILE_INTERIOR_EDGE_STYLE = 0  # 0 = seamless between adjacent tiles
 
 # Phase 04 — Snake body continuity
 SNAKE_SEGMENT_SCALE = 1.15  # Body segment diameter relative to HEX_SIZE (~2/3 tile across)

@@ -437,6 +437,14 @@ def draw_debug_overlay(surf, game):
         f"Total: {timings.get('total', 0):.2f}ms",
     ]
 
+    if hasattr(game, '_frame_times') and len(game._frame_times) > 1:
+        times = sorted(game._frame_times)
+        n = len(times)
+        avg_t = sum(times) / n
+        p95 = times[int(n * 0.95)]
+        max_t = times[-1]
+        lines.append(f"FT avg={avg_t:.1f}ms p95={p95:.1f}ms max={max_t:.1f}ms ({n})")
+
     panel_w = 220
     panel_h = 20 + len(lines) * 20
 

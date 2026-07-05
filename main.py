@@ -64,7 +64,13 @@ class SnakeGame:
         if _CLI_ARGS.get('fullscreen'):
             flags |= pygame.FULLSCREEN
         try:
-            self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+            if VSYNC_ENABLED:
+                try:
+                    self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags, vsync=1)
+                except pygame.error:
+                    self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
+            else:
+                self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
         except pygame.error as e:
             print("FATAL: Could not create display window.")
             print(f"       {e}")
@@ -98,6 +104,7 @@ class SnakeGame:
         self._full_redraw_requested = True
         self._debug_overlay = False
         self._perf_timings = {}
+        self._frame_times = []
 
         self.water_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self._tile_cache = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -250,6 +257,9 @@ class SnakeGame:
         ground_cache = self._ground_static_cache
         for q, r in self._all_hexes_cache:
             gs = ground_cache[(q, r)]
+            # Skip ground bottom during gameplay (side/rim faces cover it, avoids dark artifacts)
+            if self.state != GameState.START:
+                continue
             bot_pts = []
             valid = True
             for c_x, c_y, c_z in gs['bot_world']:
@@ -374,7 +384,13 @@ class SnakeGame:
             final_tri_color = lerp_color(tuple(final_tri_color), self._sky_hor, depth_fade)
         final_tri_color = mul_color(tuple(final_tri_color), tex_variation)
 
-        pygame.draw.polygon(surf, edge_color, top_pts, max(1, int(1 + sun_factor * 0.5)))
+        outline_width = max(1, int(1 + sun_factor * 0.5))
+        for i in range(6):
+            j = (i + 1) % 6
+            nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+            if self.state == GameState.PLAYING and in_bounds(nq, nr):
+                continue
+            pygame.draw.line(surf, edge_color, top_pts[i], top_pts[j], outline_width)
 
         bevel_n = (0.0, 0.0, 1.0)
         bevel_light = self._ambient + (1.0 - self._ambient) * max(0.0, dot3(bevel_n, self._light_dir))
@@ -384,6 +400,9 @@ class SnakeGame:
             inner_hl = add_color(inner_hl, mul_color(TILE_EDGE_EMISSIVE, emissive_edge * 0.5))
         for i in range(6):
             j = (i + 1) % 6
+            nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+            if self.state == GameState.PLAYING and in_bounds(nq, nr):
+                continue
             pygame.draw.line(surf, inner_hl, top_pts[i], top_pts[j], 2)
 
         crack_intensity = abs(static.get('noise', {}).get('crack', 0)) ** 3 * 0.3
@@ -399,6 +418,9 @@ class SnakeGame:
         rim_light = mul_color(TILE_EDGE_HIGHLIGHT, 0.25 * sun_factor * dist_factor * ao)
         for i in range(6):
             j = (i + 1) % 6
+            nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+            if self.state == GameState.PLAYING and in_bounds(nq, nr):
+                continue
             edge_center_x = (top_pts[i][0] + top_pts[j][0]) / 2
             edge_center_y = (top_pts[i][1] + top_pts[j][1]) / 2
             edge_nx = top_pts[j][1] - top_pts[i][1]
@@ -804,9 +826,9 @@ class SnakeGame:
                         self.audio.pause()
                         self.menu_selection = 0
                     elif event.key in (pygame.K_a, pygame.K_LEFT):
-                        self.turn_left()
-                    elif event.key in (pygame.K_d, pygame.K_RIGHT):
                         self.turn_right()
+                    elif event.key in (pygame.K_d, pygame.K_RIGHT):
+                        self.turn_left()
                     elif event.key == pygame.K_ESCAPE:
                         self._start_transition(GameState.START)
 
@@ -1065,13 +1087,22 @@ class SnakeGame:
             final_tri_color = lerp_color(tuple(final_tri_color), self._sky_hor, depth_fade)
         final_tri_color = mul_color(tuple(final_tri_color), tex_variation)
 
-        pygame.draw.polygon(surf, edge_color, top_pts, max(1, int(1 + sun_factor * 0.5)))
-
         pygame.draw.polygon(surf, final_tri_color, top_pts)
+
+        outline_width = max(1, int(1 + sun_factor * 0.5))
+        for i in range(6):
+            j = (i + 1) % 6
+            nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+            if self.state == GameState.PLAYING and in_bounds(nq, nr):
+                continue
+            pygame.draw.line(surf, edge_color, top_pts[i], top_pts[j], outline_width)
 
         for i in range(6):
             j = (i + 1) % 6
             quad = [top_pts[i], top_pts[j], bot_pts[j], bot_pts[i]]
+            nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+            if self.state == GameState.PLAYING and in_bounds(nq, nr):
+                continue
             nx_s, ny_s, nz_s = hex_side_normal(i)
             diff_side = max(0.0, nx_s * self._light_dir[0] + ny_s * self._light_dir[1] + nz_s * self._light_dir[2])
             side_light = (self._ambient + (1.0 - self._ambient) * diff_side) * sun_factor * dist_factor * ao
@@ -1096,6 +1127,9 @@ class SnakeGame:
         inner_hl = mul_color(TILE_EDGE_HIGHLIGHT, 0.2 * bevel_brightness)
         for i in range(6):
             j = (i + 1) % 6
+            nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+            if self.state == GameState.PLAYING and in_bounds(nq, nr):
+                continue
             pygame.draw.line(surf, inner_hl, top_pts[i], top_pts[j], 2)
 
         crack_intensity = abs(static.get('noise', {}).get('crack', 0)) ** 3 * 0.3
@@ -1172,8 +1206,8 @@ class SnakeGame:
             cx, cy, tx, ty = positions[i]
 
             t = i / max(1, n_pts - 1)
-            thickness_factor = 1.0 - (t ** 1.2) * 0.5
-            thickness_factor += 0.05 * math.sin(t * math.pi * 2)
+            thickness_factor = 1.0 - (t ** 1.8) * 0.65
+            thickness_factor += 0.04 * math.sin(t * math.pi * 1.5)
 
             w = (HEX_SIZE * SNAKE_SEGMENT_SCALE * 0.5) * thickness_factor * body_pulse
 
@@ -1235,53 +1269,21 @@ class SnakeGame:
         return segments
 
     def _draw_body_circle(self, surf, sx, sy, r, c):
-        """Draw a single shaded tube cross-section (slightly squashed for contact)."""
+        """Draw a flat-ish tube cross-section with a top highlight stripe (no per-segment specular)."""
         squash = BODY_SQUASH
         rx = r
         ry = max(1, int(r * squash))
 
-        offset_x = int(rx * 0.10)
-        offset_y = int(ry * 0.14)
+        # Main body fill
+        pygame.draw.ellipse(surf, c, (sx - rx, sy - ry, rx * 2, ry * 2))
 
-        # Shadow layer — darkest, offset down-right (away from overhead light)
-        shadow_c = mul_color(c, 0.45)
-        pygame.draw.ellipse(surf, shadow_c,
-                            (sx - rx + offset_x, sy - ry + offset_y, rx * 2, ry * 2))
-
-        # Dark rim
-        rim_c = mul_color(c, 0.65)
-        rim_r = max(1, int(rx * 0.90))
-        rim_ry = max(1, int(ry * 0.90))
-        pygame.draw.ellipse(surf, rim_c,
-                            (sx - rim_r, sy - rim_ry, rim_r * 2, rim_ry * 2))
-
-        # Mid tone
-        mid_c = mul_color(c, 0.82)
-        mid_r = max(1, int(rx * 0.74))
-        mid_ry = max(1, int(ry * 0.74))
-        pygame.draw.ellipse(surf, mid_c,
-                            (sx - mid_r, sy - mid_ry, mid_r * 2, mid_ry * 2))
-
-        # Base lit area
-        lit_c = mul_color(c, 1.05)
-        lit_r = max(1, int(rx * 0.56))
-        lit_ry = max(1, int(ry * 0.56))
-        pygame.draw.ellipse(surf, lit_c,
-                            (sx - lit_r, sy - lit_ry, lit_r * 2, lit_ry * 2))
-
-        # Inner highlight
-        hi_c = mul_color(c, 1.30)
-        hi_r = max(1, int(rx * 0.36))
-        hi_ry = max(1, int(ry * 0.36))
-        pygame.draw.ellipse(surf, hi_c,
-                            (sx - hi_r, sy - hi_ry, hi_r * 2, hi_ry * 2))
-
-        # Specular glint
-        sp_c = mul_color(c, 1.55)
-        sp_r = max(1, int(rx * 0.18))
-        sp_ry = max(1, int(ry * 0.18))
-        pygame.draw.ellipse(surf, sp_c,
-                            (sx - sp_r, sy - sp_ry, sp_r * 2, sp_ry * 2))
+        # Top highlight stripe — offset upward (toward light), narrower
+        stripe_c = mul_color(c, 1.30)
+        sw = max(1, int(rx * 0.45))
+        sh = max(1, int(ry * 0.30))
+        offset_y = -int(ry * 0.25)
+        pygame.draw.ellipse(surf, stripe_c,
+                            (sx - sw, sy - sh + offset_y, sw * 2, sh * 2))
 
     def draw_snake_body(self, surf, time_float):
         """Legacy entry point — compute segments, depth-sort, draw."""
@@ -1296,7 +1298,7 @@ class SnakeGame:
             self._draw_body_circle(surf, sx, sy, r, c)
 
     def _draw_continuous_shadow(self, surf):
-        """Draw a single continuous contact shadow under the whole body."""
+        """Draw contact shadow as short per-sample quads — no self-intersection."""
         positions = getattr(self, '_render_spline_positions', None)
         if not positions or len(positions) < 2:
             return
@@ -1307,12 +1309,13 @@ class SnakeGame:
 
         factor = 1.0 / light_dir[2]
 
-        left_edges = []
-        right_edges = []
+        # Pre-compute projected left/right for each sample
+        proj_left = []
+        proj_right = []
         for i, (wx, wy, tx, ty) in enumerate(positions):
             t = i / max(1, n - 1)
-            thickness = 1.0 - (t ** 1.2) * 0.5
-            thickness += 0.05 * math.sin(t * math.pi * 2)
+            thickness = 1.0 - (t ** 1.8) * 0.65
+            thickness += 0.04 * math.sin(t * math.pi * 1.5)
             w = (HEX_SIZE * SNAKE_SEGMENT_SCALE * 0.5) * thickness * 1.3
             if i == 0:
                 w *= 1.3  # head shadow slightly larger
@@ -1322,6 +1325,8 @@ class SnakeGame:
 
             t_len = math.hypot(tx, ty)
             if t_len < 0.001:
+                proj_left.append(None)
+                proj_right.append(None)
                 continue
             perp_x = -ty / t_len
             perp_y = tx / t_len
@@ -1329,15 +1334,20 @@ class SnakeGame:
             ex1, ey1, _ = self.camera.project(swx + perp_x * w, swy + perp_y * w, 0)
             ex2, ey2, _ = self.camera.project(swx - perp_x * w, swy - perp_y * w, 0)
             if ex1 == -999 or ex2 == -999:
-                return
-            left_edges.append((ex1, ey1))
-            right_edges.append((ex2, ey2))
+                proj_left.append(None)
+                proj_right.append(None)
+            else:
+                proj_left.append((ex1, ey1))
+                proj_right.append((ex2, ey2))
 
-        if len(left_edges) < 2:
-            return
-        poly = left_edges + right_edges[::-1]
-        if len(poly) >= 3:
-            pygame.draw.polygon(surf, (0, 0, 0, SHADOW_ALPHA), poly)
+        # Draw a quad connecting each sample i to i+1
+        for i in range(len(proj_left) - 1):
+            if proj_left[i] is None or proj_left[i + 1] is None:
+                continue
+            if proj_right[i] is None or proj_right[i + 1] is None:
+                continue
+            quad = [proj_left[i], proj_left[i + 1], proj_right[i + 1], proj_right[i]]
+            pygame.draw.polygon(surf, (0, 0, 0, SHADOW_ALPHA), quad)
 
     def draw_snake_segment(self, surf, idx, q, r, time_float):
         if not hasattr(self, '_spline_positions') or not self._spline_positions:
@@ -1594,9 +1604,24 @@ class SnakeGame:
         else:
             self._snake_set = set(self.snake)
             self._spline_positions = None
+            interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
+            lerp_t = min(1.0, self.move_timer / interval) if interval > 0 else 1.0
             if len(self.path_history) >= 2:
-                self._spline_positions = sample_spline_path(list(self.path_history), len(self.snake))
-                self._spline_positions.reverse()
+                trimmed = list(self.path_history)[:len(self.snake)]
+                extended = [self.next_head_pos()] + trimmed
+                raw = sample_spline_path(extended, len(self.snake) + 1)
+                raw.reverse()
+                result = []
+                for i in range(len(self.snake)):
+                    # Interpolate from raw[i+1] (head-ward) to raw[i] (tail-ward)
+                    # At lerp_t=0: body occupies raw[1..N] (head→tail)
+                    # At lerp_t=1: body occupies raw[0..N-1] (lookahead→near-tail)
+                    px0, py0, tx0, ty0 = raw[i + 1]
+                    px1, py1, _, _ = raw[i]
+                    px = px0 + (px1 - px0) * lerp_t
+                    py = py0 + (py1 - py0) * lerp_t
+                    result.append((px, py, tx0, ty0))
+                self._spline_positions = result
             if self._wrap_frame:
                 self._wrap_frame = False
             if self._spline_positions and len(self._spline_positions) > 0:
@@ -1659,18 +1684,17 @@ class SnakeGame:
         water_highlight = lerp_color(sun_color, WATER_HIGHLIGHT, 0.5)
 
         self.water_surf.fill((0, 0, 0, 0))
+        HORIZON_Y = HEIGHT * 0.5
+        WATER_SPANS = [(-1000, -500), (-500, 0), (0, 500), (500, 1000)]
         for wi in range(-12, 12):
             wy = wi * 28
             z_w = -TILE_HEIGHT - 20
-            w2 = 1000
             t = (wi + 25) / 50
             sx_center, sy_center, sd = self.camera.project(0, wy, z_w)
             if sx_center < -200 or sx_center > WIDTH + 200:
                 continue
             if sy_center < -200 or sy_center > HEIGHT + 200:
                 continue
-            sx1, sy1, _ = self.camera.project(-w2, wy, z_w)
-            sx2, sy2, _ = self.camera.project(w2, wy, z_w)
 
             combined_wave = (math.sin(wy * 0.04 + time_float * WATER_WAVE_SPEED) * WATER_WAVE_AMP
                     + math.sin(wy * 0.07 + time_float * WATER_WAVE_SPEED * 1.5 + 1) * WATER_WAVE_AMP * 0.6)
@@ -1679,15 +1703,23 @@ class SnakeGame:
             fresnel = 0.3 + 0.7 * (1.0 - abs(t - 0.5) * 2) ** 2
             a = int(190 * fresnel)
 
-            pts = [(sx1, sy1 + combined_wave), (sx2, sy2 + combined_wave),
-                   (sx2, sy2 + 16 + combined_wave), (sx1, sy1 + 16 + combined_wave)]
-            pygame.draw.polygon(self.water_surf, (*c, a), pts)
+            for x1, x2 in WATER_SPANS:
+                sx1, sy1, _ = self.camera.project(x1, wy, z_w)
+                sx2, sy2, _ = self.camera.project(x2, wy, z_w)
+                if sx1 == -999 or sx2 == -999:
+                    continue
+                if sy1 < HORIZON_Y and sy2 < HORIZON_Y:
+                    continue
 
-            if wi % 4 == 0:
-                hl_a = int(50 * fresnel * (0.5 + 0.5 * math.sin(time_float * 1.2 + wi * 0.3)))
-                if hl_a > 2:
-                    pygame.draw.line(self.water_surf, (*water_highlight, hl_a),
-                        (sx1, sy1 + combined_wave + 1), (sx2, sy2 + combined_wave + 1), 1)
+                pts = [(sx1, sy1 + combined_wave), (sx2, sy2 + combined_wave),
+                       (sx2, sy2 + 16 + combined_wave), (sx1, sy1 + 16 + combined_wave)]
+                pygame.draw.polygon(self.water_surf, (*c, a), pts)
+
+                if wi % 4 == 0:
+                    hl_a = int(50 * fresnel * (0.5 + 0.5 * math.sin(time_float * 1.2 + wi * 0.3)))
+                    if hl_a > 2:
+                        pygame.draw.line(self.water_surf, (*water_highlight, hl_a),
+                            (sx1, sy1 + combined_wave + 1), (sx2, sy2 + combined_wave + 1), 1)
 
         if sun_visible:
             sun_ref_x = int(sun_px)
@@ -1730,14 +1762,24 @@ class SnakeGame:
             draw_items.append((depth, 'apple'))
         
         if len(self.path_history) >= 2:
-            # Logic sampling (low res)
-            self._spline_positions = sample_spline_path(list(self.path_history), len(self.snake))
-            self._spline_positions.reverse()
+            # Use same trimmed+interpolated position as first spline block (do NOT overwrite)
+            trimmed = list(self.path_history)[:len(self.snake)]
+            extended = [self.next_head_pos()] + trimmed
+            interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
+            lerp_t = min(1.0, self.move_timer / interval) if interval > 0 else 1.0
             # Render sampling (high res)
-            self._render_spline_positions = sample_spline_path(list(self.path_history), len(self.snake) * 10)
-            self._render_spline_positions.reverse()
+            n_high = len(self.snake) * 10
+            raw_high = sample_spline_path(extended, n_high + 1)
+            raw_high.reverse()
+            result_high = []
+            for i in range(n_high):
+                px0, py0, tx0, ty0 = raw_high[i + 1]
+                px1, py1, _, _ = raw_high[i]
+                px = px0 + (px1 - px0) * lerp_t
+                py = py0 + (py1 - py0) * lerp_t
+                result_high.append((px, py, tx0, ty0))
+            self._render_spline_positions = result_high
         else:
-            self._spline_positions = None
             self._render_spline_positions = None
 
         for idx, (q, r) in enumerate(self.snake):
@@ -1901,6 +1943,10 @@ class SnakeGame:
 
         self._perf_timings['ui'] = (time.perf_counter() - _t0) * 1000
         self._perf_timings['total'] = (time.perf_counter() - _t_frame) * 1000
+
+        self._frame_times.append(self._perf_timings['total'])
+        if len(self._frame_times) > 120:
+            self._frame_times = self._frame_times[-120:]
 
         needs_full = (self._full_redraw_requested or
                       not self._tile_cache_valid or

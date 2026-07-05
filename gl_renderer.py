@@ -3,7 +3,7 @@ import struct
 import pygame
 from config import *
 from shaders import *
-from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color
+from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color, in_bounds
 from game_state import GameState
 
 try:
@@ -189,6 +189,9 @@ class GLRenderer:
                                           0.0, 0.0, 1.0, ao_val, dist_factor, fog_depth, tex_variation, float(q), float(r)))
                 for i in range(6):
                     j = (i + 1) % 6
+                    nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
+                    if game.state == GameState.PLAYING and in_bounds(nq, nr):
+                        continue
                     nx_s, ny_s, nz_s = hex_side_normal(i)
                     for px, py in [top_pts[i], top_pts[j], bot_pts[j], top_pts[i], bot_pts[j], bot_pts[i]]:
                         all_verts.append((px, py, fside_norm[0], fside_norm[1], fside_norm[2],

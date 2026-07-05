@@ -20,7 +20,7 @@ os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 
 import pygame
 from game_state import GameState
-from config import WIDTH, HEIGHT, FIXED_DT, BASE_MOVE_INTERVAL, MIN_MOVE_INTERVAL, SPEED_DECAY_PER_POINT, CAM_3D_DIST, LIGHT_DIR, SUN_ANGLE_SPEED
+from config import WIDTH, HEIGHT, FIXED_DT, BASE_MOVE_INTERVAL, MIN_MOVE_INTERVAL, SPEED_DECAY_PER_POINT, CAM_3D_DIST, LIGHT_DIR, SUN_ANGLE_SPEED, HEX_SIZE
 
 # ---------------------------------------------------------------------------
 # All tunable thresholds — one obvious place
@@ -571,6 +571,174 @@ def check_turn_head_band_and_yaw_rate(game):
     return head_ok, head_meas, yaw_rate_ok, yaw_meas
 
 
+def check_motion_continuity(game):
+    """During a straight run at default speed, capture 20 consecutive frames;
+    head world pixel position (from spline interpolation) must change on EVERY
+    frame, and no single-frame jump may exceed 2x the median per-frame movement.
+
+    We measure *world* pixel position (not screen) because the camera follows
+    the head directly — if we projected through the camera the head would always
+    land at the same screen coordinate."""
+    _drain()
+    game.state = GameState.PLAYING
+    game.reset()
+    game.audio._ok = False
+    for _ in range(5):
+        game.update(FIXED_DT)
+    head_positions = []
+    for _ in range(20):
+        game.render()
+        # Use interpolated drawn world position from spline, NOT raw grid pos
+        sp = getattr(game, '_spline_positions', None)
+        if sp and len(sp) > 0:
+            hx, hy = sp[0][0], sp[0][1]
+        else:
+            return False, "no _spline_positions after render"
+        head_positions.append((hx, hy))
+        game.update(FIXED_DT)
+
+    jumps = []
+    for i in range(1, len(head_positions)):
+        dx = head_positions[i][0] - head_positions[i - 1][0]
+        dy = head_positions[i][1] - head_positions[i - 1][1]
+        jumps.append(math.hypot(dx, dy))
+
+    if not jumps:
+        return False, "no jumps (only one frame?)"
+    if max(jumps) == 0:
+        return False, "no movement detected"
+
+    median_jump = sorted(jumps)[len(jumps) // 2]
+    max_jump = max(jumps)
+    threshold = 2.0 * median_jump
+    ok = max_jump <= threshold and min(jumps) > 0
+    msg = f"all frames moving, median jump {median_jump:.2f}px no stalls, max jump {'≤' if ok else '>'} 2x median"
+    return ok, msg
+
+
+def check_body_length(game):
+    """With a known snake length, project the drawn head and drawn tail-tip
+    world positions; their world distance must be within ±20% of
+    (segments × cell spacing)."""
+    from utils import hex_to_pixel
+    _drain()
+    game.state = GameState.PLAYING
+    game.reset()
+    game.audio._ok = False
+    for _ in range(20):
+        game.update(FIXED_DT)
+
+    game.render()
+    if not hasattr(game, '_spline_positions') or not game._spline_positions:
+        return False, "no spline positions"
+
+    head_px, head_py, _, _ = game._spline_positions[0]
+    tail_px, tail_py, _, _ = game._spline_positions[-1]
+    measured = math.hypot(tail_px - head_px, tail_py - head_py)
+
+    n_segments = len(game.snake)
+    cell_spacing = HEX_SIZE * math.sqrt(3)
+    expected = (n_segments - 1) * cell_spacing
+
+    ratio = measured / expected if expected > 0 else 0
+    ok = 0.80 <= ratio <= 1.20
+    msg = f"measured={measured:.1f} expected={expected:.1f} ratio={ratio:.3f} ratio 0.80–1.20"
+    return ok, msg
+
+
+def check_shadow_band(surf):
+    """Check bottom half for near-black (< 5 luma) regions wider than 5% of
+    the frame directly under the body path — catches the self-intersecting
+    shadow band (luma < 5 filters out normal body contact shadow)."""
+    w, h = surf.get_size()
+    x_lo = int(w * 0.40)
+    x_hi = int(w * 0.60)
+    y_lo = int(h * 0.50)
+    y_hi = int(h * 0.85)
+    max_dark_run = 0
+    for y in range(y_lo, y_hi, 4):
+        run = 0
+        for x in range(x_lo, x_hi):
+            c = surf.get_at((x, y))
+            lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+            if lum < 5:
+                run += 1
+            else:
+                if run > max_dark_run:
+                    max_dark_run = run
+                run = 0
+    width_pct = max_dark_run / max(1, x_hi - x_lo) * 100
+    threshold = 15.0
+    ok = width_pct < threshold
+    msg = f"no dark run > {threshold:.0f}% width" if ok else f"dark run {width_pct:.1f}% > {threshold:.0f}%"
+    return ok, msg
+
+
+def check_terrain_gaps(game):
+    """Check bottom-center region for near-black pixels (< 12 luma).
+    With grooves gone, must drop below 2%."""
+    import pygame.image
+    _drain()
+    game.state = GameState.PLAYING
+    game.reset()
+    game.audio._ok = False
+    game._tile_cache_valid = False
+    game._ground_cache_valid = False
+    for _ in range(30):
+        game.update(FIXED_DT)
+    game.render()
+    path = os.path.join(OUT_DIR, "terrain_gaps_check.png")
+    pygame.image.save(game.screen, path)
+    surf = pygame.image.load(path)
+
+    w, h = surf.get_size()
+    x_lo = int(w * 0.25)
+    x_hi = int(w * 0.75)
+    y_lo = int(h * 0.55)
+    y_hi = int(h * 0.90)
+    total = 0
+    dark = 0
+    for y in range(y_lo, y_hi, 4):
+        for x in range(x_lo, x_hi, 4):
+            c = surf.get_at((x, y))
+            lum = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+            total += 1
+            if lum < 12:
+                dark += 1
+    pct = dark / total * 100 if total > 0 else 0
+    ok = pct < 2.0
+    return ok, f"dark_pixels={pct:.2f}% < 2%"
+
+
+def check_frame_pacing(game):
+    """Over 120 rendered frames, 95th-percentile frame time ≤ 1.5× median."""
+    _drain()
+    game.state = GameState.PLAYING
+    game.reset()
+    game.audio._ok = False
+    for _ in range(30):
+        game.update(FIXED_DT)
+    for _ in range(5):
+        game.render()
+    frame_times = []
+    for _ in range(120):
+        t0 = time.perf_counter()
+        game.render()
+        elapsed = (time.perf_counter() - t0) * 1000
+        frame_times.append(elapsed)
+        if game.state == GameState.PLAYING:
+            game.update(FIXED_DT)
+    if not frame_times:
+        return False, "no frame times"
+    sorted_t = sorted(frame_times)
+    n = len(sorted_t)
+    median = sorted_t[n // 2]
+    p95 = sorted_t[int(n * 0.95)]
+    ok = p95 <= 1.5 * median if median > 0 else False
+    msg = f"p95={p95:.2f}ms median={median:.2f}ms ratio={p95/max(median,0.001):.2f}"
+    return ok, msg
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -687,6 +855,19 @@ def main():
         pygame.image.save(worst_surf, os.path.join(OUT_DIR, "turn_worst.png"))
         lines.append(_table_line(f"  turn_script/sky_purity", f"{worst_non_sky:.2f}%", "≤ 5.0%", sky_ok))
 
+    # Check shadow band on turn frames
+    sb_worst_pct = 0.0
+    for p in turn_paths:
+        surf = pygame.image.load(p)
+        sb_ok, sb_msg = check_shadow_band(surf)
+        if not sb_ok:
+            pct_str = sb_msg.split()[2].rstrip('%')
+            sb_worst_pct = max(sb_worst_pct, float(pct_str))
+    sb_pass = sb_worst_pct <= 15.0
+    if not sb_pass:
+        all_pass = False
+    lines.append(_table_line("  shadow_band", "no dark band detected" if sb_pass else f"dark run {sb_worst_pct:.1f}%", "no dark run > 15% width", sb_pass))
+
     # 2 – Orientation
     ok, sy_ground, sy_above = check_orientation(game)
     if not ok:
@@ -731,7 +912,31 @@ def main():
         all_pass = False
     lines.append(_table_line("  fps", f"{fps:.1f}", f"≥ {CHECKS['fps_min']}", ok))
 
-    # 4 – Summary table
+    # 8 – Frame pacing
+    fp_ok, fp_msg = check_frame_pacing(game)
+    if not fp_ok:
+        all_pass = False
+    lines.append(_table_line("  frame_pacing", fp_msg, "p95 ≤ 1.5× median", fp_ok))
+
+    # 9 – Motion continuity
+    mc_ok, mc_msg = check_motion_continuity(game)
+    if not mc_ok:
+        all_pass = False
+    lines.append(_table_line("  motion_continuity", mc_msg, "all frames moving, no stall, max jump ≤ 2x median", mc_ok))
+
+    # 10 – Body length
+    bl_ok, bl_msg = check_body_length(game)
+    if not bl_ok:
+        all_pass = False
+    lines.append(_table_line("  body_length", bl_msg, "ratio 0.80–1.20", bl_ok))
+
+    # 11 – Terrain gaps
+    tg_ok, tg_msg = check_terrain_gaps(game)
+    if not tg_ok:
+        all_pass = False
+    lines.append(_table_line("  terrain_gaps", tg_msg, "dark_pixels < 2%", tg_ok))
+
+    # Summary table
     print("\nCheck table")
     print("-" * 112)
     print(_table_line("Check", "Measured", "Threshold", "Status"))

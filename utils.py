@@ -96,6 +96,12 @@ def in_bounds(q, r):
     return max(abs(q), abs(r), abs(q + r)) <= GRID_RADIUS
 
 
+def has_neighbor(q, r, direction):
+    dq, dr = DIR_VECTORS[direction]
+    nq, nr = q + dq, r + dr
+    return in_bounds(nq, nr)
+
+
 def wrap_coords(q, r):
     wq = (q + GRID_RADIUS) % GRID_COLS - GRID_RADIUS
     wr = (r + GRID_RADIUS) % GRID_ROWS - GRID_RADIUS
