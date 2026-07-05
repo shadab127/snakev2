@@ -75,6 +75,31 @@ def hex_side_normal(face_idx):
     return (math.cos(angle), math.sin(angle), 0.0)
 
 
+def hex_corner_height(q, r, height_map, neighbor_cache=None):
+    if neighbor_cache is None:
+        neighbor_cache = DIR_VECTORS
+    h_self = height_map.get((q, r), 0)
+    count = 1
+    total = h_self
+    for dq, dr in neighbor_cache:
+        nk = (q + dq, r + dr)
+        if nk in height_map:
+            total += height_map[nk]
+            count += 1
+    return total / count
+
+
+def hex_inner_corners(cx, cy, inset):
+    inner = []
+    for i in range(6):
+        angle = math.radians(60 * i - 30)
+        inner.append((
+            cx + (HEX_SIZE - inset) * math.cos(angle),
+            cy + (HEX_SIZE - inset) * math.sin(angle),
+        ))
+    return inner
+
+
 def hex_to_pixel(q, r):
     x = HEX_SIZE * math.sqrt(3) * (q + r / 2)
     y = HEX_SIZE * 1.5 * r
@@ -205,6 +230,39 @@ def dot3(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 
 
+def rgb_to_hsv(r, g, b):
+    rn, gn, bn = r / 255.0, g / 255.0, b / 255.0
+    mx = max(rn, gn, bn)
+    mn = min(rn, gn, bn)
+    d = mx - mn
+    h = 0.0
+    s = 0.0 if mx == 0 else d / mx
+    v = mx
+    if d != 0:
+        if mx == rn:
+            h = 60.0 * (((gn - bn) / d) % 6)
+        elif mx == gn:
+            h = 60.0 * (((bn - rn) / d) + 2)
+        else:
+            h = 60.0 * (((rn - gn) / d) + 4)
+    return (h / 360.0, s, v)
+
+
+def hsv_to_rgb(h, s, v):
+    hi = int(h * 6) % 6
+    f = h * 6 - int(h * 6)
+    p = v * (1 - s)
+    q = v * (1 - f * s)
+    tt = v * (1 - (1 - f) * s)
+    if hi == 0: rn, gn, bn = v, tt, p
+    elif hi == 1: rn, gn, bn = q, v, p
+    elif hi == 2: rn, gn, bn = p, v, tt
+    elif hi == 3: rn, gn, bn = p, q, v
+    elif hi == 4: rn, gn, bn = tt, p, v
+    else: rn, gn, bn = v, p, q
+    return (int(rn * 255), int(gn * 255), int(bn * 255))
+
+
 def tile_noise(q, r):
     if (q, r) not in _tile_noise_cache:
         _tile_noise_cache[(q, r)] = {
@@ -215,6 +273,10 @@ def tile_noise(q, r):
             'crack': perlin_noise(q * 3.7 + r * 2.1, r * 3.7 - q * 2.1, 2.0, 2, 0.3),
             'grass': perlin_noise(q * 5.1 + r * 3.3, r * 5.1 - q * 3.3, 2.0, 2, 0.4),
             'tex': perlin_noise(q * 8 + r * 5, r * 8 - q * 5, 3.0, 2, 0.4),
+            'hue': perlin_noise(q * 1.7 + r * 2.3 + 50, r * 1.7 - q * 2.3 + 50, 1.5, 2, 0.5),
+            'brightness': perlin_noise(q * 2.1 + r * 1.3 + 200, r * 2.1 - q * 1.3 + 200, 1.8, 2, 0.5),
+            'saturation': perlin_noise(q * 1.9 + r * 2.7 + 300, r * 1.9 - q * 2.7 + 300, 2.0, 2, 0.5),
+            'height': perlin_noise(q * 0.8 + r * 1.2 + 400, r * 0.8 - q * 1.2 + 400, 1.2, 3, 0.5),
         }
     return _tile_noise_cache[(q, r)]
 

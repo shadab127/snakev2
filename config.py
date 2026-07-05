@@ -6,6 +6,11 @@ GRID_RADIUS = 7
 GRID_COLS = GRID_RADIUS * 2 + 1
 GRID_ROWS = GRID_RADIUS * 2 + 1
 TILE_HEIGHT = 18
+TILE_BEVEL = 3.0  # Bevel/chamfer inset amount
+TILE_HEIGHT_VARIATION = 3.0  # Max height offset for rolling terrain
+TILE_COLOR_HUE_SHIFT = 0.05  # Max hue shift (±5%)
+TILE_COLOR_BRIGHTNESS_SHIFT = 0.08  # Max brightness shift (±8%)
+TILE_COLOR_SATURATION_SHIFT = 0.06  # Max saturation shift
 
 TILE_CLIP_MARGIN = 100
 

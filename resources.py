@@ -2,7 +2,7 @@ import math
 import random
 import pygame
 from config import *
-from utils import all_hexes, hex_to_pixel, hex_corners, compute_tile_ao, lerp_color, perlin_noise, generate_soft_shadow, tile_noise, compute_sky_color
+from utils import all_hexes, hex_to_pixel, hex_corners, compute_tile_ao, lerp_color, mul_color, perlin_noise, generate_soft_shadow, tile_noise, compute_sky_color, rgb_to_hsv, hsv_to_rgb
 
 
 class ResourceManager:
@@ -89,13 +89,64 @@ class ResourceManager:
                 self._tile_ao_cache[(q, r)] = compute_tile_ao(q, r, set())
 
     def _init_sprites(self):
-        self.master_head_sprite = self.generate_sphere_sprite(48, HEAD_COLOR, (230, 255, 240), shininess=20, scale_pattern=False)
+        self.master_head_sprite = self.generate_snake_head_sprite(48, HEAD_COLOR, (200, 255, 220), shininess=20)
         self.master_body_sprites = [
             self.generate_sphere_sprite(48, color, (180, 230, 190), shininess=15, scale_pattern=True)
             for color in SNAKE_COLORS
         ]
         self.master_apple_sprite = self.generate_apple_sprite(48, APPLE_BASE, APPLE_HIGHLIGHT, APPLE_SPECULAR, APPLE_DEEP)
         self.soft_shadow_sprite = generate_soft_shadow(32)
+
+    def generate_snake_head_sprite(self, radius, base_color, specular_color=(255, 255, 255), shininess=25):
+        size = radius * 2
+        surf = pygame.Surface((size, size), pygame.SRCALPHA)
+        lx, ly, lz = LIGHT_DIR
+        # Elongated snake head shape with pointed nose
+        stretch_x = 1.3
+        stretch_y = 0.85
+        nose_shift = radius * 0.25
+        for y in range(size):
+            dy = (y - radius) / (radius * stretch_y)
+            dy_sq = dy * dy
+            if dy_sq >= 1.0:
+                continue
+            for x in range(size):
+                dx = ((x - radius) - nose_shift) / (radius * stretch_x)
+                dist_sq = dx * dx + dy_sq
+                if dist_sq <= 1.0:
+                    dz = math.sqrt(1.0 - dist_sq)
+                    n_dot_l = dx * lx + dy * ly + dz * lz
+                    diff = max(0.0, n_dot_l)
+                    diff_intensity = 0.30 + 0.70 * diff
+
+                    D = (dz + 0.4 * (dz * dz)) ** 1.5 * 2
+                    G = min(1.0, 1.0 / (n_dot_l + 0.1 * dz + 0.001))
+                    F = 0.15 + (1.0 - 0.15) * (1.0 - n_dot_l) ** 5
+                    spec = D * G * F / (4.0 * n_dot_l + 0.01) if n_dot_l > 0 else 0
+
+                    r = min(255, int(base_color[0] * diff_intensity + specular_color[0] * spec * 0.3))
+                    g = min(255, int(base_color[1] * diff_intensity + specular_color[1] * spec * 0.3))
+                    b = min(255, int(base_color[2] * diff_intensity + specular_color[2] * spec * 0.3))
+
+                    # Fresnel rim lighting
+                    rim = (1.0 - dz) ** 3.0
+                    r = min(255, int(r + 40 * rim))
+                    g = min(255, int(g + 50 * rim))
+                    b = min(255, int(b + 40 * rim))
+
+                    # Slight nose highlight
+                    if dx > 0.3 and abs(dy) < 0.3:
+                        nose_glow = max(0, 1.0 - (dx - 0.3) / 0.5) * 0.15
+                        r = min(255, int(r + specular_color[0] * nose_glow))
+                        g = min(255, int(g + specular_color[1] * nose_glow))
+                        b = min(255, int(b + specular_color[2] * nose_glow))
+
+                    alpha = 255
+                    if dist_sq > 0.92:
+                        alpha = int(255 * (1.0 - dist_sq) / 0.08)
+
+                    surf.set_at((x, y), (r, g, b, alpha))
+        return surf
 
     def generate_sphere_sprite(self, radius, base_color, specular_color=(255, 255, 255), shininess=25, scale_pattern=False):
         size = radius * 2
@@ -294,6 +345,9 @@ class ResourceManager:
             dist_factor = max(0, 1 - dist_from_center * 0.3)
             tex_variation = 1.0 + 0.06 * noise['tex']
 
+            # Height variation (rolling hills)
+            height_offset = noise['height'] * TILE_HEIGHT_VARIATION
+
             mat_noise = noise['base']
             if mat_noise > 0.4:
                 base_top_color = list(TILE_DIRT)
@@ -320,6 +374,23 @@ class ResourceManager:
             noise_offset = int(noise_val * 20)
             for i in range(3):
                 base_top_color[i] = max(0, min(255, base_top_color[i] + noise_offset))
+
+            # Color variation via HSV shifts
+            h, s, v = rgb_to_hsv(*base_top_color)
+            hue_shift = noise['hue'] * TILE_COLOR_HUE_SHIFT
+            bright_shift = noise['brightness'] * TILE_COLOR_BRIGHTNESS_SHIFT
+            sat_shift = noise['saturation'] * TILE_COLOR_SATURATION_SHIFT
+            h = (h + hue_shift) % 1.0
+            s = max(0.05, min(1.0, s + sat_shift))
+            v = max(0.2, min(1.0, v + bright_shift))
+            base_top_color = list(hsv_to_rgb(h, s, v))
+
+            # Apply same variation to side color
+            h_s, s_s, v_s = rgb_to_hsv(*base_side_color)
+            h_s = (h_s + hue_shift * 0.7) % 1.0
+            s_s = max(0.05, min(1.0, s_s + sat_shift * 0.7))
+            v_s = max(0.15, min(1.0, v_s + bright_shift * 0.7))
+            base_side_color = list(hsv_to_rgb(h_s, s_s, v_s))
 
             grass_seed = noise['grass']
             grass_blades = []
@@ -355,6 +426,7 @@ class ResourceManager:
                 'grass_seed': grass_seed,
                 'grass_blades': grass_blades,
                 'noise': noise,
+                'height_offset': height_offset,
             }
 
             ground_dist = dist_from_center

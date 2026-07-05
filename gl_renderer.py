@@ -3,7 +3,7 @@ import struct
 import pygame
 from config import *
 from shaders import *
-from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color, in_bounds
+from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color, in_bounds, rgb_to_hsv, hsv_to_rgb
 from game_state import GameState
 
 try:
@@ -176,6 +176,21 @@ class GLRenderer:
                 noise_offset = int(noise_val * 20)
                 for ci in range(3):
                     base_top_color[ci] = max(0, min(255, base_top_color[ci] + noise_offset))
+                # HSV color variation
+                h, s, v = rgb_to_hsv(*base_top_color)
+                hue_shift = noise['hue'] * TILE_COLOR_HUE_SHIFT
+                bright_shift = noise['brightness'] * TILE_COLOR_BRIGHTNESS_SHIFT
+                sat_shift = noise['saturation'] * TILE_COLOR_SATURATION_SHIFT
+                h = (h + hue_shift) % 1.0
+                s = max(0.05, min(1.0, s + sat_shift))
+                v = max(0.2, min(1.0, v + bright_shift))
+                base_top_color = list(hsv_to_rgb(h, s, v))
+                # Side color variation
+                h_s, s_s, v_s = rgb_to_hsv(*base_side_color)
+                h_s = (h_s + hue_shift * 0.7) % 1.0
+                s_s = max(0.05, min(1.0, s_s + sat_shift * 0.7))
+                v_s = max(0.15, min(1.0, v_s + bright_shift * 0.7))
+                base_side_color = list(hsv_to_rgb(h_s, s_s, v_s))
                 if (q, r) in snake_set:
                     base_top_color = list(lerp_color(tuple(base_top_color), TILE_TOP_LIGHT, 0.15))
                 fog_depth = game.camera.project(cx, cy, 0)[2]
@@ -221,6 +236,8 @@ class GLRenderer:
             sky_top, sky_mid, sky_hor = compute_sky_color(time_float)
             fog_c = tuple(c / 255.0 for c in lerp_color(sky_mid, FOG_COLOR, 0.6))
             self._set_uniform(self.prog_tile, 'u_fog_color', fog_c)
+            day_cycle = math.sin(time_float * SUN_ANGLE_SPEED)
+            self._set_uniform(self.prog_tile, 'u_day_cycle', day_cycle)
             if self.vao_tile:
                 self.vao_tile.render(moderngl.TRIANGLES, vertices=self.vertex_count)
             return True

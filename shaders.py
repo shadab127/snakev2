@@ -19,14 +19,17 @@ uniform vec3 u_light_dir;
 uniform float u_ambient;
 uniform vec3 u_sun_color;
 uniform vec3 u_fog_color;
+uniform float u_day_cycle;
 
 const vec3 GAME_OVER_TOP = vec3(0.039, 0.098, 0.078);
 const vec3 GAME_OVER_SIDE = vec3(0.024, 0.055, 0.047);
 const vec3 TILE_GLOW = vec3(0.314, 0.863, 0.588);
 const vec3 TILE_EDGE_EMISSIVE = vec3(0.078, 0.235, 0.118);
+const vec3 SUNSET_TINT = vec3(1.0, 0.7, 0.4);
 
 void main() {
     vec3 base_c = v_base_color;
+    bool is_side = v_normal.z < 0.5;
     if (u_game_over == 1) {
         if (v_normal.z > 0.5) {
             base_c = GAME_OVER_TOP;
@@ -45,6 +48,27 @@ void main() {
     float light = (u_ambient + (1.0 - u_ambient) * diff) * sun_factor * v_dist_factor * v_ao;
 
     vec3 color = base_c * light;
+
+    // Rim lighting (stronger on side faces facing away from light)
+    if (is_side) {
+        float rim = max(0.0, 1.0 - abs(dot(v_normal, u_light_dir)));
+        rim = pow(rim, 2.0) * 0.15;
+        color += vec3(rim * 0.5, rim * 0.7, rim * 0.5);
+    }
+
+    // Top face specular highlight
+    if (v_normal.z > 0.5) {
+        float spec = max(0.0, dot(v_normal, u_light_dir));
+        spec = pow(spec, 8.0) * 0.08;
+        color += vec3(spec);
+    }
+
+    // Sunset/dusk warm tint
+    float day_t = u_day_cycle;
+    if (day_t < 0.3 && day_t > -0.3) {
+        float warm_t = 1.0 - abs(day_t) / 0.3;
+        color = mix(color, color * SUNSET_TINT, warm_t * 0.15);
+    }
 
     float fog_t = clamp((v_fog_depth - 350.0) / 850.0, 0.0, 1.0);
     color = mix(color, u_fog_color, fog_t * 0.35);
