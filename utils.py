@@ -96,12 +96,6 @@ def in_bounds(q, r):
     return max(abs(q), abs(r), abs(q + r)) <= GRID_RADIUS
 
 
-def has_neighbor(q, r, direction):
-    dq, dr = DIR_VECTORS[direction]
-    nq, nr = q + dq, r + dr
-    return in_bounds(nq, nr)
-
-
 def wrap_coords(q, r):
     wq = (q + GRID_RADIUS) % GRID_COLS - GRID_RADIUS
     wr = (r + GRID_RADIUS) % GRID_ROWS - GRID_RADIUS
@@ -188,24 +182,6 @@ def compute_sun_light(time_float):
     return light_dir, ambient, sun_color
 
 
-def compute_lighting(normal, light_dir, ambient, sun_color, specular_power=0):
-    ndotl = max(0.0, dot3(normal, light_dir))
-    diffuse_intensity = ambient + (1.0 - ambient) * ndotl
-    c = mul_color(sun_color, diffuse_intensity)
-    specular = 0.0
-    if specular_power > 0 and ndotl > 0:
-        view_dir = (0.0, 0.0, 1.0)
-        hx = light_dir[0] + view_dir[0]
-        hy = light_dir[1] + view_dir[1]
-        hz = light_dir[2] + view_dir[2]
-        hl = math.sqrt(hx * hx + hy * hy + hz * hz)
-        if hl > 0:
-            hx /= hl; hy /= hl; hz /= hl
-        nh = max(0.0, hx * normal[0] + hy * normal[1] + hz * normal[2])
-        specular = nh ** specular_power
-    return c, specular
-
-
 def compute_sky_color(time_float):
     angle = time_float * SUN_ANGLE_SPEED
     day_cycle = math.sin(angle)
@@ -227,12 +203,6 @@ def compute_sky_color(time_float):
 
 def dot3(a, b):
     return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-
-
-def lerp3(a, b, t):
-    return (a[0] + (b[0] - a[0]) * t,
-            a[1] + (b[1] - a[1]) * t,
-            a[2] + (b[2] - a[2]) * t)
 
 
 def tile_noise(q, r):

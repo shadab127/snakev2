@@ -72,15 +72,11 @@ class Matrix4:
 class Camera:
     def __init__(self):
         self.eye = (0.0, 0.0, CAM_3D_HEIGHT)
-        self.eye_vel = (0.0, 0.0, 0.0)
         self.target = (0.0, 0.0, 0.0)
-        self.target_vel = (0.0, 0.0, 0.0)
         self.up = (0.0, 0.0, 1.0)
         self.view_matrix = Matrix4.identity()
         self.proj_matrix = Matrix4.identity()
         self.vp_matrix = Matrix4.identity()
-        self._old_x = 0.0
-        self._old_y = 0.0
         self.width = WIDTH
         self.height = HEIGHT
 
@@ -100,19 +96,6 @@ class Camera:
         # Event reactions
         self._eat_punch_timer = 0.0
         self._death_pull_timer = 0.0
-
-    def _spring_1d(self, x, v, target, dt):
-        omega = CAM_SPRING_OMEGA
-        f = omega * omega * (target - x) - 2.0 * omega * v
-        v += f * dt
-        x += v * dt
-        return x, v
-
-    def _spring_3d(self, pos, vel, target, dt):
-        x, vx = self._spring_1d(pos[0], vel[0], target[0], dt)
-        y, vy = self._spring_1d(pos[1], vel[1], target[1], dt)
-        z, vz = self._spring_1d(pos[2], vel[2], target[2], dt)
-        return (x, y, z), (vx, vy, vz)
 
     def _build_matrices(self):
         aspect = self.width / self.height
@@ -169,9 +152,6 @@ class Camera:
             self.eye = (self.eye[0] + shake_x, self.eye[1] + shake_y, self.eye[2] + shake_z)
             self._shake_timer = max(0.0, self._shake_timer - dt)
 
-        self._old_x += (hx - dx * dist - self._old_x) * CAM_3D_LERP
-        self._old_y += (hy - dy * dist - self._old_y) * CAM_3D_LERP
-
         if build_matrices:
             self._build_matrices()
 
@@ -194,18 +174,9 @@ class Camera:
         dy = math.sin(self._yaw)
         self.target = (hx + dx * CAM_3D_LOOKAHEAD, hy + dy * CAM_3D_LOOKAHEAD, 0.0)
         self.eye = (hx - dx * CAM_3D_DIST, hy - dy * CAM_3D_DIST, CAM_3D_HEIGHT)
-        self.eye_vel = (0.0, 0.0, 0.0)
-        self.target_vel = (0.0, 0.0, 0.0)
         self.roll = 0.0
         self.roll_target = 0.0
-        self._old_x = self.eye[0]
-        self._old_y = self.eye[1]
         self._build_matrices()
-
-    def shake(self, intensity, duration):
-        self._shake_intensity = intensity
-        self._shake_duration = duration
-        self._shake_timer = duration
 
     def eat_punch(self):
         self._eat_punch_timer = CAM_EAT_PUNCH_DURATION
@@ -218,11 +189,8 @@ class Camera:
         self.roll_target = direction_change * CAM_BANK_INTENSITY
 
     def project(self, x, y, z=0):
-        if DEBUG_OLD_CAMERA:
-            return self._project_old(x, y, z)
-        # Apply roll as a screen-space rotation
         v = Matrix4.transform(self.vp_matrix, x, y, z, 1.0)
-        if v[3] <= 1e-10:  # behind camera (negative w) or at camera plane
+        if v[3] <= 1e-10:
             return (-999, -999, 99999)
         inv_w = 1.0 / v[3]
         sx_ndc = v[0] * inv_w
@@ -230,7 +198,6 @@ class Camera:
         depth = v[2] * inv_w
         sx = (sx_ndc + 1.0) * 0.5 * self.width
         sy = (1.0 - sy_ndc) * 0.5 * self.height
-        # Apply roll rotation around screen center
         if abs(self.roll) > 0.001:
             cos_r = math.cos(self.roll)
             sin_r = math.sin(self.roll)
@@ -241,18 +208,3 @@ class Camera:
             sx = cx_s + rx * cos_r - ry * sin_r
             sy = cy_s + rx * sin_r + ry * cos_r
         return (sx, sy, depth)
-
-    def _project_old(self, x, y, z=0):
-        COS_TILT = math.cos(TILT)
-        SIN_TILT = math.sin(TILT)
-        wx = x - self._old_x
-        wy = y - self._old_y
-        y_rot = wy * COS_TILT - z * SIN_TILT
-        depth = -wy * SIN_TILT - z * COS_TILT
-        z_cam = depth + CAM_DIST
-        if z_cam <= 0:
-            return (-999, -999, 99999)
-        factor = FOV / z_cam
-        sx = wx * factor + WIDTH / 2
-        sy = y_rot * factor + Y_OFFSET
-        return (sx, sy, z_cam)

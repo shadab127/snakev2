@@ -4,14 +4,6 @@ A 3D hex-grid snake game with dynamic lighting, particle effects, and atmospheri
 
 Navigate a glowing snake across a procedurally generated hexagonal island, eat apples to grow, and survive as long as you can.
 
-## Screenshots
-
-| Start Screen | Gameplay | Game Over |
-|---|---|---|
-| ![Start Screen](dev/screenshots/start_screen.png) | ![Gameplay](dev/screenshots/gameplay.png) | ![Game Over](dev/screenshots/game_over.png) |
-
-Screenshots captured via the headless verification harness (`python dev/verify_screenshots.py`).
-
 ## Features
 
 - **3D hex grid** — isometric projection with day/night cycle, dynamic shadows, and depth fog
@@ -92,8 +84,6 @@ snakev2 --help         Show usage
 pip install pyinstaller
 python build.py
 ```
-
-The executable will be created in `dist/SnakeV2`. See `build.py` for additional flags.
 
 ## Requirements
 

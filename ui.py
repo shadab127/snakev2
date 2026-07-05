@@ -32,27 +32,15 @@ def _draw_menu_items(surf, items, selection, x, y, game, spacing=42, align_cente
         is_selected = i == selection
         font = game.font_small if not is_selected else game.font_med
         color = TEXT_GLOW if is_selected else TEXT_DIM
-        if is_selected:
-            glow = game.font_med.render(label, True, (40, 180, 120, 60))
-            pulse = 1.0 + 0.04 * math.sin(pygame.time.get_ticks() * 0.005 + i)
-            scale_s = int(font.render(label, True, color).get_width() * pulse)
         txt = font.render(label, True, color)
-        tw = txt.get_width()
-        th = txt.get_height()
         iy = y + i * spacing
-        if align_center:
-            ix = x
-        else:
-            ix = x
-        if align_center:
-            r = txt.get_rect(center=(x, iy))
-        else:
-            r = txt.get_rect(midleft=(x, iy))
+        r = txt.get_rect(center=(x, iy)) if align_center else txt.get_rect(midleft=(x, iy))
         if shadow_alpha > 0 and not is_selected:
             shadow = font.render(label, True, (0, 0, 0))
             shadow.set_alpha(shadow_alpha)
             surf.blit(shadow, (r.x + 1, r.y + 1))
         if is_selected:
+            glow = game.font_med.render(label, True, (40, 180, 120, 60))
             glow_r = txt.get_rect(center=(x, iy))
             for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1), (-2, 0), (2, 0)]:
                 surf.blit(glow, (glow_r.x + dx, glow_r.y + dy))

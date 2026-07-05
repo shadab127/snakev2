@@ -11,11 +11,11 @@ except ImportError:
     np = None
 from config import *
 from game_state import GameState
-from utils import (perlin_noise, catmull_rom, hex_side_normal, hex_to_pixel,
-                   hex_corners, all_hexes, in_bounds, lerp_color,
-                   mul_color, add_color, screen_shake_offset, compute_tile_ao,
-                   dot3, tile_noise, generate_soft_shadow, _perlin_cache,
-                   wrap_coords, compute_sun_light, compute_lighting, compute_sky_color,
+from utils import (hex_side_normal, hex_to_pixel,
+                   all_hexes, in_bounds, lerp_color,
+                   mul_color, add_color, screen_shake_offset,
+                   dot3, tile_noise, _perlin_cache,
+                   wrap_coords, compute_sun_light, compute_sky_color,
                    sample_spline_path)
 from particle import Particle, ParticlePool
 from resources import ResourceManager
@@ -97,9 +97,6 @@ class SnakeGame:
         self.eat_flash = 0
         self.screen_shake = 0
         self.ambient_time = 0
-        self.bloom_layer = pygame.Surface((WIDTH // 2, HEIGHT // 2), pygame.SRCALPHA)
-
-        self._dirty_rects = []
         self._prev_dirty_rects = []
         self._full_redraw_requested = True
         self._debug_overlay = False
@@ -114,8 +111,6 @@ class SnakeGame:
             self.gl_renderer.available = False
         self.camera = Camera()
         self.draw_cache = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-
-        self.cloud_surf_cache = pygame.Surface((WIDTH, HEIGHT // 2), pygame.SRCALPHA)
 
         self._warned_no_numpy = False
         self._wrap_frame = False
@@ -189,11 +184,6 @@ class SnakeGame:
             return getattr(self.resources, name)
         except AttributeError:
             raise AttributeError(f"'SnakeGame' object has no attribute '{name}'")
-
-    def _add_dirty_rect(self, x, y, w, h):
-        r = pygame.Rect(x, y, w, h)
-        r.clamp_ip(pygame.Rect(0, 0, WIDTH, HEIGHT))
-        self._dirty_rects.append(r)
 
     def _request_full_redraw(self):
         self._full_redraw_requested = True
@@ -1284,18 +1274,6 @@ class SnakeGame:
         offset_y = -int(ry * 0.25)
         pygame.draw.ellipse(surf, stripe_c,
                             (sx - sw, sy - sh + offset_y, sw * 2, sh * 2))
-
-    def draw_snake_body(self, surf, time_float):
-        """Legacy entry point — compute segments, depth-sort, draw."""
-        segments = self._compute_body_segments(time_float)
-        if not segments:
-            return
-
-        # Sort back-to-front (far to near)
-        segments.sort(key=lambda x: x[0], reverse=True)
-
-        for _depth, sx, sy, r, c in segments:
-            self._draw_body_circle(surf, sx, sy, r, c)
 
     def _draw_continuous_shadow(self, surf):
         """Draw contact shadow as short per-sample quads — no self-intersection."""

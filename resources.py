@@ -377,8 +377,7 @@ class ResourceManager:
                 c = lerp_color(sky_mid, sky_hor, local_t)
             self.bg_surf.fill(c, rect=(0, y, WIDTH, 2))
 
-    def cleanup(self):
-        pass
+
 
 
 def generate_app_icon(size=32):

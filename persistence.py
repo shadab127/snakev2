@@ -148,11 +148,6 @@ class PersistenceManager:
     def get_high_score(self):
         return self._data['high_score']
 
-    def set_high_score(self, score):
-        score = int(score)
-        if score > self._data['high_score']:
-            self._data['high_score'] = score
-
     def add_score(self, score):
         score = int(score)
         if score > self._data['high_score']:

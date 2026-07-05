@@ -1,5 +1,4 @@
 import math
-from __version__ import __version__
 
 WIDTH, HEIGHT = 1280, 800
 HEX_SIZE = 32
@@ -8,13 +7,6 @@ GRID_COLS = GRID_RADIUS * 2 + 1
 GRID_ROWS = GRID_RADIUS * 2 + 1
 TILE_HEIGHT = 18
 
-TILT = math.radians(52)
-CAM_DIST = 450
-FOV = 420
-Y_OFFSET = HEIGHT * 0.58
-
-# Camera follow smoothing (0=no movement, 1=instant snap)
-CAM_3D_LERP = 0.25
 TILE_CLIP_MARGIN = 100
 
 FOG_NEAR = 350
@@ -27,8 +19,6 @@ CAM_3D_FOV = 45
 CAM_3D_FOV_RAD = math.radians(CAM_3D_FOV)
 CAM_3D_NEAR = 10
 CAM_3D_FAR = 2000
-DEBUG_OLD_CAMERA = False
-
 RENDER_FPS = 60
 FIXED_DT = 1.0 / 180.0
 BASE_MOVE_INTERVAL = 0.15
@@ -78,10 +68,7 @@ SKY_STAR_FADE_START = -0.3
 SKY_STAR_FADE_END = -0.7
 WATER_WAVE_SPEED = 0.6
 WATER_WAVE_AMP = 2.0
-FOG_DENSITY = 0.35
-ISLAND_EDGE_VARIATION = 0.3
 AMBIENT_BIRD_COUNT = 3
-AMBIENT_CLOUD_COUNT = 8
 STAR_PARALLAX_FACTOR = 200
 
 TILE_BASE = (55, 130, 100)
@@ -121,7 +108,6 @@ APPLE_STEM = (55, 35, 18)
 APPLE_LEAF = (45, 165, 55)
 APPLE_LEAF_HIGHLIGHT = (80, 220, 90)
 APPLE_LEAF_VEIN = (35, 130, 42)
-APPLE_SPOTS = (180, 25, 40)
 
 PARTICLE_COLORS = [
     (255, 230, 90),
@@ -157,7 +143,6 @@ FONT_NAME = None
 VSYNC_ENABLED = True
 
 # Audio
-AUDIO_ENABLED = True
 MUSIC_VOLUME = 0.5
 SFX_VOLUME = 0.7
 AMBIENCE_VOLUME = 0.3
@@ -166,9 +151,6 @@ AUDIO_FADE_TIME = 0.5
 # Phase 03 — Spline motion
 SEGMENT_SPACING = 0.35
 MAX_PATH_LENGTH = 60
-
-# Phase 04 — Terrain surface (interior edges get no outline gap)
-TILE_INTERIOR_EDGE_STYLE = 0  # 0 = seamless between adjacent tiles
 
 # Phase 04 — Snake body continuity
 SNAKE_SEGMENT_SCALE = 1.15  # Body segment diameter relative to HEX_SIZE (~2/3 tile across)

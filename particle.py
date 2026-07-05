@@ -86,28 +86,20 @@ class Particle:
             surf.blit(scaled_glow, (int(sx - g_size / 2), int(sy - g_size / 2)), special_flags=pygame.BLEND_ADD)
         elif self.particle_type == 'glow':
             g_size = max(4, int(s * 6))
-            if game and hasattr(game, '_particle_glow_scaled'):
-                scaled_glow = game._particle_glow_scaled.get((self.color, g_size))
-                if scaled_glow is None:
-                    glow_surf = pygame.Surface((g_size, g_size), pygame.SRCALPHA)
-                    center = g_size // 2
-                    for gi in range(center, 0, -1):
-                        ga = int(a * (1 - gi / center) * 0.5)
-                        if ga > 0:
-                            pygame.draw.circle(glow_surf, (r, g, b, ga), (center, center), gi)
-                    game._particle_glow_scaled[(self.color, g_size)] = glow_surf
-                    scaled_glow = glow_surf
-                else:
-                    scaled_glow.set_alpha(a)
-                surf.blit(scaled_glow, (int(sx - g_size / 2), int(sy - g_size / 2)), special_flags=pygame.BLEND_ADD)
-            else:
+            scaled_glow = game._particle_glow_scaled.get((self.color, g_size)) if game else None
+            if scaled_glow is None:
                 glow_surf = pygame.Surface((g_size, g_size), pygame.SRCALPHA)
                 center = g_size // 2
                 for gi in range(center, 0, -1):
                     ga = int(a * (1 - gi / center) * 0.5)
                     if ga > 0:
                         pygame.draw.circle(glow_surf, (r, g, b, ga), (center, center), gi)
-                surf.blit(glow_surf, (int(sx - g_size / 2), int(sy - g_size / 2)), special_flags=pygame.BLEND_ADD)
+                scaled_glow = glow_surf
+                if game:
+                    game._particle_glow_scaled[(self.color, g_size)] = scaled_glow
+            else:
+                scaled_glow.set_alpha(a)
+            surf.blit(scaled_glow, (int(sx - g_size / 2), int(sy - g_size / 2)), special_flags=pygame.BLEND_ADD)
         else:
             sc = (r * a // 255, g * a // 255, b * a // 255)
             pygame.draw.circle(surf, sc, (int(sx), int(sy)), s)
