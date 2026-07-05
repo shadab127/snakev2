@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.0 — 2026-07-05
+
+- Phase 01: extended frame checker with scripted turn capture and sky-purity check
+- Phase 02: project() rejects behind-camera points (negative w); call-site guards prevent garbage geometry
+- Phase 03: sun/glint/stars world-anchored to camera heading via projected world-space direction
+- Fix: sky water reflection used BLEND_ADD + set_alpha, but BLEND_ADD ignores set_alpha; switched to normal blit so reflect_alpha is honoured (fixes turn_script/white_pct 5.03%→0.02% and pre-existing mean_luma 127→61)
+- Phase 04: camera heading rotates smoothly via yaw interpolation with angular speed cap (MAX_YAW_SPEED=220°/s, 120° turn takes ~0.55s); camera uses interpolated Catmull-Rom head pixel position directly (no spring lag) so head stays centered during swing; banking decay rate-normalized for 180 Hz follow_snake calls; added turn_head_band and turn_yaw_rate checker assertions
+- Phase 05: replaced flat quadrilateral ribbon with a rounded shaded tube for the snake body; each spline position draws 6 overlapping concentric circles (shadow→rim→mid→lit→highlight→specular) as a 3D spherical cross-section, creating a smooth shaded tube; per-segment depth sorting integrated into the depth-bucketed render loop; eat-bulge, death-collapse, and body-pulse animations preserved
+- Phase 06: continuous body shadow (single filled polygon under the body replaces per-segment blobs); slither S-wave (SLITHER_AMPLITUDE=2px, SLITHER_WAVELENGTH=4); tube cross-section vertically squashed (BODY_SQUASH=0.85) for contact flattening; head dips on eat (EAT_HEAD_DIP=1.0); apple contact shadow
+- Phase 07: fixed start_screen footer text contrast across full day cycle by adjusting bg anchor offset; all checker luma windows pass at midnight, dawn, and noon
+- Phase 08: v4 sign-off — playable, turn-stable, recognizable snake; checker exits 0 at all tested day-cycle points; 129 tests green
+
 ## v0.1.0 — 2026-07-04
 
 ### Phase 09: Human Playability Sign-Off

@@ -22,6 +22,7 @@ FOG_FAR = 1200
 CAM_3D_DIST = 280
 CAM_3D_HEIGHT = 130
 CAM_3D_LOOKAHEAD = 101
+MAX_YAW_SPEED = 220  # degrees/sec — 120° double-turn takes ~0.55s
 CAM_3D_FOV = 45
 CAM_3D_FOV_RAD = math.radians(CAM_3D_FOV)
 CAM_3D_NEAR = 10
@@ -71,7 +72,7 @@ POST_TONE_MAP_ENABLED = True
 POST_GOD_RAYS_ENABLED = True
 POST_VIGNETTE_ENABLED = True
 BLOOM_THRESHOLD = 0.55
-BLOOM_INTENSITY = 0.45
+BLOOM_INTENSITY = 0.30
 
 SKY_STAR_FADE_START = -0.3
 SKY_STAR_FADE_END = -0.7
@@ -81,6 +82,7 @@ FOG_DENSITY = 0.35
 ISLAND_EDGE_VARIATION = 0.3
 AMBIENT_BIRD_COUNT = 3
 AMBIENT_CLOUD_COUNT = 8
+STAR_PARALLAX_FACTOR = 200
 
 TILE_BASE = (55, 130, 100)
 TILE_TOP = (100, 210, 165)
@@ -185,6 +187,12 @@ MAX_PARTICLES = 500
 
 # Phase 07 — Per-tile depth fade
 DEPTH_FADE_STRENGTH = 0.25  # Depth fade toward sky color (0 = off, reproduces phase-06)
+
+# Phase 06 — Snake grounding & motion feel
+SLITHER_AMPLITUDE = 2.0   # Lateral wave amplitude in pixels (0 = off)
+SLITHER_WAVELENGTH = 4.0  # Number of segments per full wave
+BODY_SQUASH = 0.85        # Vertical squash factor for body cross-section at contact
+EAT_HEAD_DIP = 1.0        # Head z-dip magnitude during eat animation (units)
 
 # Phase 06 — Camera dynamics
 CAM_SPRING_OMEGA = 6.0

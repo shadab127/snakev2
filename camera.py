@@ -88,6 +88,10 @@ class Camera:
         self.roll = 0.0
         self.roll_target = 0.0
 
+        # Smooth yaw interpolation
+        self._yaw = 0.0
+        self._yaw_target = 0.0
+
         # Shake
         self._shake_intensity = 0.0
         self._shake_duration = 0.0
@@ -116,10 +120,19 @@ class Camera:
         self.proj_matrix = Matrix4.perspective(CAM_3D_FOV_RAD, aspect, CAM_3D_NEAR, CAM_3D_FAR)
         self.vp_matrix = Matrix4.multiply(self.proj_matrix, self.view_matrix)
 
-    def follow_snake(self, head_q, head_r, direction_idx, dt=1/60.0, speed_ratio=0.0):
-        from utils import hex_to_pixel
-        hx, hy = hex_to_pixel(head_q, head_r)
-        dx, dy = DIR_VECTORS[direction_idx]
+    def follow_snake(self, hx, hy, direction_idx, dt=1/60.0, speed_ratio=0.0, build_matrices=True):
+        # Yaw target from current direction, interpolate with capped speed
+        self._yaw_target = direction_idx * (math.pi / 3)
+        angle_diff = (self._yaw_target - self._yaw + math.pi) % (2 * math.pi) - math.pi
+        max_delta = math.radians(MAX_YAW_SPEED) * dt
+        if abs(angle_diff) <= max_delta:
+            self._yaw = self._yaw_target
+        else:
+            self._yaw += max_delta if angle_diff > 0 else -max_delta
+
+        # Direction from interpolated yaw (smooth heading)
+        dx = math.cos(self._yaw)
+        dy = math.sin(self._yaw)
 
         # Speed-based pull-back
         dist = CAM_3D_DIST * (1.0 + speed_ratio * CAM_PULLBACK_SPEED)
@@ -138,24 +151,14 @@ class Camera:
             height *= (1.0 + (CAM_DEATH_PULLOUT - 1.0) * pull_t * 0.5)
             self._death_pull_timer = max(0.0, self._death_pull_timer - dt)
 
-        desired_target = (hx + dx * CAM_3D_LOOKAHEAD, hy + dy * CAM_3D_LOOKAHEAD, 0.0)
-        desired_eye = (hx - dx * dist, hy - dy * dist, max(CAM_MIN_HEIGHT, height))
+        # Eye and target from head pixel position + direct yaw offset
+        self.target = (hx + dx * CAM_3D_LOOKAHEAD, hy + dy * CAM_3D_LOOKAHEAD, 0.0)
+        self.eye = (hx - dx * dist, hy - dy * dist, max(CAM_MIN_HEIGHT, height))
 
-        # Wrap detection: snap if camera would swing violently
-        dx_eye = desired_eye[0] - self.eye[0]
-        dy_eye = desired_eye[1] - self.eye[1]
-        if math.hypot(dx_eye, dy_eye) > CAM_3D_DIST * 1.5:
-            self.eye = desired_eye
-            self.eye_vel = (0.0, 0.0, 0.0)
-            self.target = desired_target
-            self.target_vel = (0.0, 0.0, 0.0)
-        else:
-            self.eye, self.eye_vel = self._spring_3d(self.eye, self.eye_vel, desired_eye, dt)
-            self.target, self.target_vel = self._spring_3d(self.target, self.target_vel, desired_target, dt)
-
-        # Banking decay
-        self.roll_target *= 0.9
-        self.roll += (self.roll_target - self.roll) * 0.1
+        # Banking decay (rate-normalized: assumes 0.9/0.1 at 60 FPS)
+        fps_ratio = dt * 60.0
+        self.roll_target *= 0.9 ** fps_ratio
+        self.roll += (self.roll_target - self.roll) * (1.0 - 0.9 ** fps_ratio)
 
         # Screen shake in camera space
         if self._shake_timer > 0:
@@ -166,10 +169,11 @@ class Camera:
             self.eye = (self.eye[0] + shake_x, self.eye[1] + shake_y, self.eye[2] + shake_z)
             self._shake_timer = max(0.0, self._shake_timer - dt)
 
-        self._old_x += (desired_eye[0] - self._old_x) * CAM_3D_LERP
-        self._old_y += (desired_eye[1] - self._old_y) * CAM_3D_LERP
+        self._old_x += (hx - dx * dist - self._old_x) * CAM_3D_LERP
+        self._old_y += (hy - dy * dist - self._old_y) * CAM_3D_LERP
 
-        self._build_matrices()
+        if build_matrices:
+            self._build_matrices()
 
     def update_idle(self, dt, time_float):
         """Gentle breathing drift for title screen / idle scenes."""
@@ -183,10 +187,11 @@ class Camera:
         self.proj_matrix = Matrix4.perspective(CAM_3D_FOV_RAD, aspect, CAM_3D_NEAR, CAM_3D_FAR)
         self.vp_matrix = Matrix4.multiply(self.proj_matrix, self.view_matrix)
 
-    def snap_to(self, head_q, head_r, direction_idx):
-        from utils import hex_to_pixel
-        hx, hy = hex_to_pixel(head_q, head_r)
-        dx, dy = DIR_VECTORS[direction_idx]
+    def snap_to(self, hx, hy, direction_idx):
+        self._yaw = direction_idx * (math.pi / 3)
+        self._yaw_target = self._yaw
+        dx = math.cos(self._yaw)
+        dy = math.sin(self._yaw)
         self.target = (hx + dx * CAM_3D_LOOKAHEAD, hy + dy * CAM_3D_LOOKAHEAD, 0.0)
         self.eye = (hx - dx * CAM_3D_DIST, hy - dy * CAM_3D_DIST, CAM_3D_HEIGHT)
         self.eye_vel = (0.0, 0.0, 0.0)
@@ -217,7 +222,7 @@ class Camera:
             return self._project_old(x, y, z)
         # Apply roll as a screen-space rotation
         v = Matrix4.transform(self.vp_matrix, x, y, z, 1.0)
-        if abs(v[3]) < 1e-10:
+        if v[3] <= 1e-10:  # behind camera (negative w) or at camera plane
             return (-999, -999, 99999)
         inv_w = 1.0 / v[3]
         sx_ndc = v[0] * inv_w

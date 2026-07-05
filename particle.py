@@ -59,6 +59,8 @@ class Particle:
 
     def draw(self, surf, game=None):
         sx, sy, depth = game.camera.project(self.x, self.y, self.z)
+        if sx == -999:
+            return
         s = max(1, int(self.current_size))
         a = self.alpha
         if a <= 0:
