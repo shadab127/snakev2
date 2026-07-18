@@ -2342,8 +2342,17 @@ class SnakeGame:
         self._perf_timings['tiles'] = (time.perf_counter() - _t_ground) * 1000
 
         _t_composite = time.perf_counter()
+        period = 2 * GRID_RADIUS + 1
+        q_px, q_py = hex_to_pixel(period, 0)
+        r_px, r_py = hex_to_pixel(0, period)
+        vdq = self._visual_dq
+        vdr = self._visual_dr
+        tile_shift_x = -int(vdq * q_px + vdr * r_px)
+        tile_shift_y = -int(vdq * q_py + vdr * r_py)
         self.draw_cache.fill((0, 0, 0, 0))
         self.draw_cache.blit(self._tile_cache, (0, 0))
+        if tile_shift_x != 0 or tile_shift_y != 0:
+            self.draw_cache.blit(self._tile_cache, (tile_shift_x, tile_shift_y))
 
         # Continuous body shadow (under depth-sorted items)
         self._draw_continuous_shadow(self.draw_cache)
