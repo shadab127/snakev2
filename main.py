@@ -15,8 +15,9 @@ from utils import (hex_side_normal, hex_to_pixel,
                    all_hexes, in_bounds, lerp_color,
                    mul_color, add_color, screen_shake_offset,
                    dot3, tile_noise, _perlin_cache,
-                   wrap_coords, compute_sun_light, compute_sky_color,
-                   sample_spline_path, hex_corner_height, hex_inner_corners,
+                   wrap_coords, canonical_cell, compute_sun_light,
+                   compute_sky_color, sample_spline_path,
+                   hex_corner_height, hex_inner_corners,
                    rgb_to_hsv, hsv_to_rgb)
 from particle import Particle, ParticlePool
 from resources import ResourceManager
@@ -131,6 +132,8 @@ class SnakeGame:
 
         self._warned_no_numpy = False
         self._wrap_frame = False
+        self._visual_dq = 0
+        self._visual_dr = 0
 
         self._last_camera_px = 0.0
         self._last_camera_py = 0.0
@@ -603,9 +606,11 @@ class SnakeGame:
         self.move_lerp = 0
         self.smooth_positions = {}
         self.prev_snake_positions = {}
+        self._visual_dq = 0
+        self._visual_dr = 0
         self.path_history.clear()
         for sq, sr in self.snake:
-            self.path_history.append((sq, sr))
+            self.path_history.append((sq, sr, 0, 0))
         self.eat_anim = {'timer': 0, 'bulge_idx': -1, 'bulge_progress': 0}
         self.death_anim = {'timer': 0, 'phase': 'none'}
         self._death_snake_set = set()
@@ -694,6 +699,20 @@ class SnakeGame:
         dq, dr = DIR_VECTORS[self.direction]
         return (q + dq, r + dr)
 
+    def _visual_head_pos(self):
+        if self.path_history:
+            return self.path_history[0][:2]
+        return self.snake[0]
+
+    def _next_head_unwrapped(self):
+        q, r = self.snake[0]
+        dq, dr = DIR_VECTORS[self.direction]
+        raw_q, raw_r = q + dq, r + dr
+        head_dq = self._visual_dq
+        head_dr = self._visual_dr
+        return (raw_q + head_dq * (2 * GRID_RADIUS + 1),
+                raw_r + head_dr * (2 * GRID_RADIUS + 1))
+
     def move_snake(self):
         old_dir = self.direction
         self.direction = self.next_direction
@@ -712,8 +731,16 @@ class SnakeGame:
         self.snake.insert(0, new_head)
         if len(self.snake) > self._max_snake_len_this_game:
             self._max_snake_len_this_game = len(self.snake)
-        if not wrapped:
-            self.path_history.appendleft(new_head)
+
+        if wrapped:
+            _, _, dq_add, dr_add = canonical_cell(q, r)
+            self._visual_dq += dq_add
+            self._visual_dr += dr_add
+            self._wrap_frame = True
+
+        vis_dq = self._visual_dq
+        vis_dr = self._visual_dr
+        self.path_history.appendleft((wrapped_q, wrapped_r, vis_dq, vis_dr))
 
         # Direction change detection for banking & dust
         dir_changed = old_dir != self.direction
@@ -755,14 +782,6 @@ class SnakeGame:
             self.camera.eat_punch()
         else:
             self.snake.pop()
-
-        # Rebuild path_history from final snake state after wrap to guarantee
-        # it matches the actual snake positions (avoids spline visual glitches).
-        if wrapped:
-            self._wrap_frame = True
-            self.path_history.clear()
-            for sq, sr in self.snake:
-                self.path_history.append((sq, sr))
 
         changed_tiles = set(self.snake)
         if hasattr(self, '_prev_snake_set'):
@@ -2153,9 +2172,15 @@ class SnakeGame:
             lerp_t = min(1.0, self.move_timer / interval) if interval > 0 else 1.0
             if len(self.path_history) >= 2:
                 trimmed = list(self.path_history)[:len(self.snake)]
-                extended = [self.next_head_pos()] + trimmed
+                next_uq, next_ur = self._next_head_unwrapped()
+                extended = [(next_uq, next_ur)] + trimmed
                 raw = sample_spline_path(extended, len(self.snake) + 1)
                 raw.reverse()
+                R = GRID_RADIUS
+                period = 2 * R + 1
+                head_dq = self._visual_dq
+                head_dr = self._visual_dr
+                off_px, off_py = hex_to_pixel(head_dq * period, head_dr * period)
                 result = []
                 for i in range(len(self.snake)):
                     # Interpolate from raw[i+1] (head-ward) to raw[i] (tail-ward)
@@ -2163,12 +2188,13 @@ class SnakeGame:
                     # At lerp_t=1: body occupies raw[0..N-1] (lookahead→near-tail)
                     px0, py0, tx0, ty0 = raw[i + 1]
                     px1, py1, _, _ = raw[i]
-                    px = px0 + (px1 - px0) * lerp_t
-                    py = py0 + (py1 - py0) * lerp_t
+                    px = px0 + (px1 - px0) * lerp_t - off_px
+                    py = py0 + (py1 - py0) * lerp_t - off_py
                     result.append((px, py, tx0, ty0))
                 self._spline_positions = result
             if self._wrap_frame:
                 self._wrap_frame = False
+                self._request_full_redraw()
             if self._spline_positions and len(self._spline_positions) > 0:
                 hx_cam, hy_cam = self._spline_positions[0][0], self._spline_positions[0][1]
             else:

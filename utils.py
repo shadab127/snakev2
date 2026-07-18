@@ -296,19 +296,29 @@ def tile_noise(q, r):
     return _tile_noise_cache[(cq, cr)]
 
 
+def _unwrapped_pixel(entry):
+    """Convert a path_history entry to unwrapped pixel position.
+    Entry is (q, r, dq, dr) or (q, r) — handles both formats."""
+    if len(entry) >= 4:
+        q, r, dq, dr = entry[0], entry[1], entry[2], entry[3]
+        period = 2 * GRID_RADIUS + 1
+        return hex_to_pixel(q + dq * period, r + dr * period)
+    return hex_to_pixel(entry[0], entry[1])
+
+
 def sample_spline_path(path_points, num_segments):
     """Sample evenly-spaced positions along a Catmull-Rom curve
-    traced through path_points (list of (q,r) hex coords, head first).
+    traced through path_points (list of (q,r,dq,dr) hex coords, head first).
 
     Returns list of (px, py, tx, ty) where (tx,ty) is the unit tangent.
     """
     if len(path_points) < 2:
         if not path_points:
             return [(0.0, 0.0, 0.0, 0.0)] * max(1, num_segments)
-        px, py = hex_to_pixel(*path_points[0])
+        px, py = _unwrapped_pixel(path_points[0])
         return [(px, py, 0.0, 0.0)] * num_segments
 
-    pixels = [hex_to_pixel(q, r) for q, r in path_points]
+    pixels = [_unwrapped_pixel(e) for e in path_points]
     n = len(pixels)
 
     if num_segments <= 1:
