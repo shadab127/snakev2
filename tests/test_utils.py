@@ -90,9 +90,11 @@ class TestHexMath:
                 assert -GRID_RADIUS <= wr <= GRID_RADIUS
 
     def test_all_hexes_count(self):
+        from utils import in_bounds
         hexes = all_hexes()
-        expected = (GRID_RADIUS * 2 + 1) ** 2
-        assert len(hexes) == expected
+        assert len(hexes) == 169  # 1 + 6*(1+2+...+7) = 169 for radius 7
+        for q, r in hexes:
+            assert in_bounds(q, r), f"({q},{r}) should be in bounds"
 
     def test_all_hexes_includes_origin(self):
         hexes = all_hexes()
@@ -128,6 +130,25 @@ class TestHexMath:
 
     def test_in_bounds_axial_corner(self):
         assert in_bounds(GRID_RADIUS, GRID_RADIUS) is False  # |q+r| > radius
+
+    def test_canonical_cell_basic(self):
+        from utils import canonical_cell
+        cq, cr, dq, dr = canonical_cell(0, 0)
+        assert (cq, cr) == (0, 0)
+        assert (dq, dr) == (0, 0)
+
+    def test_canonical_cell_edge_wrap(self):
+        from utils import canonical_cell
+        cq, cr, dq, dr = canonical_cell(GRID_RADIUS + 1, 0)
+        assert (cq, cr) == (-GRID_RADIUS, 0)
+        assert (dq, dr) == (1, 0)
+
+    def test_canonical_cell_multi_period(self):
+        from utils import canonical_cell, in_bounds
+        period = 2 * GRID_RADIUS + 1
+        cq, cr, dq, dr = canonical_cell(period + 1, -period - 2)
+        assert in_bounds(cq, cr), f"canonical cell ({cq},{cr}) must be in bounds"
+        assert (dq, dr) == (1, -1)
 
 
 # ============================================================

@@ -122,9 +122,23 @@ def in_bounds(q, r):
 
 
 def wrap_coords(q, r):
-    wq = (q + GRID_RADIUS) % GRID_COLS - GRID_RADIUS
-    wr = (r + GRID_RADIUS) % GRID_ROWS - GRID_RADIUS
+    R = GRID_RADIUS
+    period = 2 * R + 1
+    wq = (q + R) % period - R
+    wr = (r + R) % period - R
     return wq, wr
+
+
+def canonical_cell(q, r):
+    """Return the canonical cell within the toroidal board and the
+    period deltas for unwrapped visual movement."""
+    R = GRID_RADIUS
+    period = 2 * R + 1
+    wq = (q + R) % period - R
+    wr = (r + R) % period - R
+    dq = (q - wq) // period
+    dr = (r - wr) // period
+    return wq, wr, dq, dr
 
 
 _all_hexes_cache = None
@@ -132,13 +146,12 @@ _all_hexes_cache = None
 def all_hexes():
     global _all_hexes_cache
     if _all_hexes_cache is None:
-        cols = GRID_RADIUS * 2 + 1
-        rows = GRID_RADIUS * 2 + 1
+        R = GRID_RADIUS
         _all_hexes_cache = []
-        for row in range(rows):
-            for col in range(cols):
-                q = col - (row + (row & 1)) // 2 - GRID_RADIUS
-                r = row - GRID_RADIUS
+        for r in range(-R, R + 1):
+            q_min = max(-R, -R - r)
+            q_max = min(R, R - r)
+            for q in range(q_min, q_max + 1):
                 _all_hexes_cache.append((q, r))
     return _all_hexes_cache
 
@@ -166,16 +179,17 @@ def screen_shake_offset(intensity):
 
 
 def compute_tile_ao(q, r, snake_set):
+    R = GRID_RADIUS
     neighbor_count = 0
     for dq, dr in DIR_VECTORS:
         nq, nr = q + dq, r + dr
         if not in_bounds(nq, nr):
+            nq, nr = wrap_coords(nq, nr)
+        if (nq, nr) in snake_set:
             neighbor_count += 1
-        elif (nq, nr) in snake_set:
-            neighbor_count += 1
-    edge_dist = (q * q + r * r + q * r) ** 0.5 / GRID_RADIUS
-    noise = tile_noise(q, r)
-    height_var = abs(noise.get('detail', 0)) * 0.15
+    edge_dist = min(1.0, max(abs(q), abs(r), abs(q + r)) / R)
+    c_noise = tile_noise(q, r)
+    height_var = abs(c_noise.get('detail', 0)) * 0.15
     base_ao = 1.0 - 0.04 * neighbor_count - 0.12 * edge_dist - height_var * 0.2
     return max(0.45, min(1.0, base_ao))
 
@@ -264,21 +278,22 @@ def hsv_to_rgb(h, s, v):
 
 
 def tile_noise(q, r):
-    if (q, r) not in _tile_noise_cache:
-        _tile_noise_cache[(q, r)] = {
-            'base': perlin_noise(q * 0.5 + r * 0.8, r * 0.5 - q * 0.8, 1.0, 2, 0.5),
-            'detail': perlin_noise(q * 2.3 + r * 1.7, r * 2.3 - q * 1.7, 1.5, 2, 0.5),
-            'moss': perlin_noise(q * 3.7 + r * 2.1, r * 3.7 - q * 2.1, 2.0, 2, 0.4),
-            'dirt': perlin_noise(q * 4.1 + r * 3.3 + 100, r * 4.1 - q * 3.3 + 100, 2.5, 2, 0.35),
-            'crack': perlin_noise(q * 3.7 + r * 2.1, r * 3.7 - q * 2.1, 2.0, 2, 0.3),
-            'grass': perlin_noise(q * 5.1 + r * 3.3, r * 5.1 - q * 3.3, 2.0, 2, 0.4),
-            'tex': perlin_noise(q * 8 + r * 5, r * 8 - q * 5, 3.0, 2, 0.4),
-            'hue': perlin_noise(q * 1.7 + r * 2.3 + 50, r * 1.7 - q * 2.3 + 50, 1.5, 2, 0.5),
-            'brightness': perlin_noise(q * 2.1 + r * 1.3 + 200, r * 2.1 - q * 1.3 + 200, 1.8, 2, 0.5),
-            'saturation': perlin_noise(q * 1.9 + r * 2.7 + 300, r * 1.9 - q * 2.7 + 300, 2.0, 2, 0.5),
-            'height': perlin_noise(q * 0.8 + r * 1.2 + 400, r * 0.8 - q * 1.2 + 400, 1.2, 3, 0.5),
+    cq, cr = wrap_coords(q, r)
+    if (cq, cr) not in _tile_noise_cache:
+        _tile_noise_cache[(cq, cr)] = {
+            'base': perlin_noise(cq * 0.5 + cr * 0.8, cr * 0.5 - cq * 0.8, 1.0, 2, 0.5),
+            'detail': perlin_noise(cq * 2.3 + cr * 1.7, cr * 2.3 - cq * 1.7, 1.5, 2, 0.5),
+            'moss': perlin_noise(cq * 3.7 + cr * 2.1, cr * 3.7 - cq * 2.1, 2.0, 2, 0.4),
+            'dirt': perlin_noise(cq * 4.1 + cr * 3.3 + 100, cr * 4.1 - cq * 3.3 + 100, 2.5, 2, 0.35),
+            'crack': perlin_noise(cq * 3.7 + cr * 2.1, cr * 3.7 - cq * 2.1, 2.0, 2, 0.3),
+            'grass': perlin_noise(cq * 5.1 + cr * 3.3, cr * 5.1 - cq * 3.3, 2.0, 2, 0.4),
+            'tex': perlin_noise(cq * 8 + cr * 5, cr * 8 - cq * 5, 3.0, 2, 0.4),
+            'hue': perlin_noise(cq * 1.7 + cr * 2.3 + 50, cr * 1.7 - cq * 2.3 + 50, 1.5, 2, 0.5),
+            'brightness': perlin_noise(cq * 2.1 + cr * 1.3 + 200, cr * 2.1 - cq * 1.3 + 200, 1.8, 2, 0.5),
+            'saturation': perlin_noise(cq * 1.9 + cr * 2.7 + 300, cr * 1.9 - cq * 2.7 + 300, 2.0, 2, 0.5),
+            'height': perlin_noise(cq * 0.8 + cr * 1.2 + 400, cr * 0.8 - cq * 1.2 + 400, 1.2, 3, 0.5),
         }
-    return _tile_noise_cache[(q, r)]
+    return _tile_noise_cache[(cq, cr)]
 
 
 def sample_spline_path(path_points, num_segments):
