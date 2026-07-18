@@ -2351,10 +2351,13 @@ class SnakeGame:
         self.render_time = 0.0
         self._wall_time = time.perf_counter()
         self._frame_count = 0
+        self._smooth_fps = 0.0
+        self._catch_up_overruns = 0
 
         while self.state != GameState.QUIT:
             _frame_start = time.perf_counter()
             raw_dt = self.clock.tick(RENDER_FPS) / 1000.0
+            raw_dt = min(raw_dt, MAX_FRAME_DT)
 
             _t_events_start = time.perf_counter()
             self.handle_events()
@@ -2412,6 +2415,16 @@ class SnakeGame:
             self._frame_count += 1
             self._wall_time = time.perf_counter()
             self._compute_frame_stats()
+
+            frame_ms = self._perf_timings['frame']
+            if self._smooth_fps <= 0:
+                self._smooth_fps = 1000.0 / max(frame_ms, 0.001)
+            else:
+                instant_fps = 1000.0 / max(frame_ms, 0.001)
+                self._smooth_fps += (instant_fps - self._smooth_fps) * FPS_SMOOTH_ALPHA
+
+            if sim_accumulator > FIXED_DT * MAX_SIM_STEPS and self.state == GameState.PLAYING:
+                self._catch_up_overruns += 1
 
         pygame.quit()
         sys.exit()

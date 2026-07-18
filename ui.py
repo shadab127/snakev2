@@ -423,8 +423,11 @@ def draw_debug_overlay(surf, game):
     fps = game.clock.get_fps()
     stats = getattr(game, '_frame_stats', {})
 
+    smooth_fps = getattr(game, '_smooth_fps', 0)
+    overruns = getattr(game, '_catch_up_overruns', 0)
     lines = [
-        f"FPS: {fps:.1f}  (frame #{getattr(game, '_frame_count', 0)})",
+        f"FPS: {fps:.1f}  smooth: {smooth_fps:.1f}  #{getattr(game, '_frame_count', 0)}",
+        f"Overruns: {overruns}",
         f"--- Pipeline (ms) ---",
         f"Events:      {timings.get('events', 0):6.2f}",
         f"Simulation:  {timings.get('simulation', 0):6.2f}",

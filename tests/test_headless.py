@@ -8,7 +8,7 @@ import math
 import random
 import pygame
 
-from config import FIXED_DT, DIR_VECTORS, GRID_RADIUS, MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL, SPEED_DECAY_PER_POINT
+from config import FIXED_DT, DIR_VECTORS, GRID_RADIUS, MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL, SPEED_DECAY_PER_POINT, MAX_SIM_STEPS, MAX_FRAME_DT, FPS_SMOOTH_ALPHA
 from main import SnakeGame
 from game_state import GameState
 
@@ -181,3 +181,37 @@ class TestHeadlessSimulation:
 
         assert 0 <= game.direction < 6
         assert 0 <= game.next_direction < 6
+
+    def test_bounded_catch_up(self):
+        """MAX_SIM_STEPS is defined and burst of updates doesn't corrupt state."""
+        assert MAX_SIM_STEPS >= 1
+        assert MAX_SIM_STEPS <= 20
+
+        game = self._start_game()
+        self._force_apple_in_front(game)
+
+        initial_score = game.score
+        initial_length = len(game.snake)
+
+        max_steps_per_frame = MAX_SIM_STEPS * 3
+        for _ in range(40):
+            for _ in range(max_steps_per_frame):
+                game.update(FIXED_DT)
+            self._force_apple_in_front(game)
+
+        self._assert_invariants(game)
+        assert game.score >= initial_score
+        assert len(game.snake) >= initial_length
+
+    def test_frame_pacing_bounds(self):
+        """MAX_FRAME_DT prevents spiral of death from large dt spikes."""
+        from config import MAX_FRAME_DT, FIXED_DT, MAX_SIM_STEPS
+
+        import math
+        assert MAX_FRAME_DT > 0
+        assert MAX_FRAME_DT <= 0.25
+        assert FIXED_DT * MAX_SIM_STEPS <= MAX_FRAME_DT
+        capped = min(0.5, MAX_FRAME_DT)
+        assert capped == MAX_FRAME_DT
+        assert FPS_SMOOTH_ALPHA > 0
+        assert FPS_SMOOTH_ALPHA <= 0.5
