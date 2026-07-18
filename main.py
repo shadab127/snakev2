@@ -196,6 +196,7 @@ class SnakeGame:
             'vignette': POST_VIGNETTE_ENABLED,
             'show_fps': False,
         }
+        self._grass_density = quality_preset.get('grass_density', GRASS_DENSITY_HIGH)
         for k in quality_preset:
             if k in self.settings:
                 self.settings[k] = quality_preset[k]
@@ -253,6 +254,27 @@ class SnakeGame:
                 else:
                     merged.append(r.copy())
         return merged
+
+    def _compute_horizon_y(self):
+        """Compute the projected horizon line Y in screen space.
+        
+        Projects a far ground-plane point along the camera's view direction
+        to find where z=0 meets the view at infinity."""
+        eye = self.camera.eye
+        target = self.camera.target
+        dx_ground = target[0] - eye[0]
+        dy_ground = target[1] - eye[1]
+        d_len = math.hypot(dx_ground, dy_ground)
+        if d_len < 0.01:
+            return HEIGHT * 0.5
+        dx = dx_ground / d_len
+        dy = dy_ground / d_len
+        far_x = eye[0] + dx * 100000.0
+        far_y = eye[1] + dy * 100000.0
+        _, sy, _ = self.camera.project(far_x, far_y, 0)
+        if sy < -999 or sy > HEIGHT * 2:
+            return HEIGHT * 0.5
+        return sy
 
     def _compute_dirty_rects(self, time_float, shake_x, shake_y):
         rects = []
@@ -463,6 +485,7 @@ class SnakeGame:
         _, _, depth = self.camera.project(cx, cy, height_offset)
         fog_t = max(0, min(1, (depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
         depth_fade = fog_t * DEPTH_FADE_STRENGTH
+        depth_fade = depth_fade * (1.0 + fog_t) * 0.5 if fog_t > 0.3 else depth_fade * fog_t * 0.6
         if fog_t > 0:
             final_tri_color = lerp_color(tuple(final_tri_color), self._fog_tint, fog_t * 0.35)
         if depth_fade > 0:
@@ -475,7 +498,7 @@ class SnakeGame:
             nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
             if self.state == GameState.PLAYING and in_bounds(nq, nr):
                 continue
-            edge_dark = mul_color(tuple(base_top_color), 0.82 * sun_factor * ao)
+            edge_dark = mul_color(tuple(base_top_color), TILE_EDGE_SOFTEN * sun_factor * ao)
             pygame.draw.line(surf, edge_dark, top_pts[i], top_pts[j], 1)
 
         # Inner bevel highlights
@@ -515,7 +538,8 @@ class SnakeGame:
                 if rim > 0.3:
                     pygame.draw.line(surf, rim_light, inner_top_pts[i], inner_top_pts[j], 1)
 
-        if grass_seed > 0.1 and self.state != GameState.GAME_OVER:
+        grass_thresh = 0.1 / max(self._grass_density, 0.01)
+        if grass_seed > grass_thresh and self.state != GameState.GAME_OVER:
             for blade in grass_blades:
                 bx, by = blade['bx'], blade['by']
                 blade_h, blade_w = blade['blade_h'], blade['blade_w']
@@ -1285,6 +1309,7 @@ class SnakeGame:
         _, _, depth = self.camera.project(cx, cy, height_offset)
         fog_t = max(0, min(1, (depth - FOG_NEAR) / (FOG_FAR - FOG_NEAR)))
         depth_fade = fog_t * DEPTH_FADE_STRENGTH
+        depth_fade = depth_fade * (1.0 + fog_t) * 0.5 if fog_t > 0.3 else depth_fade * fog_t * 0.6
         if fog_t > 0:
             final_tri_color = lerp_color(tuple(final_tri_color), self._fog_tint, fog_t * 0.35)
         if depth_fade > 0:
@@ -1293,8 +1318,9 @@ class SnakeGame:
 
         # Draw bevel ring (between outer and inner hex) with angled normal
         bevel_color = mul_color(tuple(base_top_color), light * 0.85)
-        if depth_fade > 0:
-            bevel_color = lerp_color(bevel_color, self._sky_hor, depth_fade)
+        bevel_fade = depth_fade * 0.9
+        if bevel_fade > 0:
+            bevel_color = lerp_color(bevel_color, self._sky_hor, bevel_fade)
         bevel_color = mul_color(bevel_color, tex_variation)
 
         for i in range(6):
@@ -1321,7 +1347,7 @@ class SnakeGame:
                 continue
 
             # Subtle seam at tile boundary
-            edge_dark = mul_color(bevel_shade, 0.88)
+            edge_dark = mul_color(bevel_shade, TILE_EDGE_SOFTEN)
             pygame.draw.line(surf, edge_dark, top_pts[i], top_pts[j], 1)
 
             # Bright highlight on inner bevel edge
@@ -1337,7 +1363,7 @@ class SnakeGame:
             j = (i + 1) % 6
             nq, nr = q + DIR_VECTORS[i][0], r + DIR_VECTORS[i][1]
             if self.state == GameState.PLAYING and in_bounds(nq, nr):
-                seam_color = mul_color(final_tri_color, 0.88)
+                seam_color = mul_color(final_tri_color, TILE_EDGE_SOFTEN)
                 pygame.draw.line(surf, seam_color, top_pts[i], top_pts[j], 1)
                 # Tiny highlight on one side for bevel definition
                 if i % 2 == 0:
@@ -1399,7 +1425,8 @@ class SnakeGame:
                 if rim > 0.3:
                     pygame.draw.line(surf, rim_light, inner_top_pts[i], inner_top_pts[j], 1)
 
-        if grass_seed > 0.1 and self.state != GameState.GAME_OVER:
+        grass_thresh = 0.1 / max(self._grass_density, 0.01)
+        if grass_seed > grass_thresh and self.state != GameState.GAME_OVER:
             for blade in grass_blades:
                 bx, by = blade['bx'], blade['by']
                 blade_h, blade_w = blade['blade_h'], blade['blade_w']
@@ -2076,6 +2103,7 @@ class SnakeGame:
         time_float = self.render_time
 
         _t_setup = time.perf_counter()
+        self._horizon_y = self._compute_horizon_y()
         light_dir, ambient, sun_color = compute_sun_light(time_float)
         self._light_dir = light_dir
         self._ambient = ambient
@@ -2130,7 +2158,7 @@ class SnakeGame:
         water_highlight = lerp_color(sun_color, WATER_HIGHLIGHT, 0.5)
 
         self.water_surf.fill((0, 0, 0, 0))
-        HORIZON_Y = HEIGHT * 0.5
+        HORIZON_Y = max(0, int(self._horizon_y + WATER_HORIZON_MARGIN))
         WATER_SPANS = [(-1000, -500), (-500, 0), (0, 500), (500, 1000)]
         for wi in range(-12, 12):
             wy = wi * 28
@@ -2178,7 +2206,7 @@ class SnakeGame:
 
         if sun_visible:
             sun_ref_x = int(sun_px)
-            sun_ref_y_start = HEIGHT * 0.5
+            sun_ref_y_start = max(HORIZON_Y, int(self._horizon_y))
             sun_ref_h = HEIGHT * 0.2
             self._water_reflect_surf.fill((0, 0, 0, 0))
             for ry in range(0, int(sun_ref_h), 2):
@@ -2189,8 +2217,15 @@ class SnakeGame:
 
         if not hasattr(self, '_reflect_cache'):
             self._reflect_cache = pygame.Surface((WIDTH, HEIGHT // 3), pygame.SRCALPHA)
-            self._reflect_cache.blit(self.bg_surf, (0, 0), (0, HEIGHT // 2, WIDTH, HEIGHT // 3))
+            self._reflect_cache.blit(self.bg_surf, (0, 0), (0, int(HEIGHT * 0.5), WIDTH, HEIGHT // 3))
             self._reflect_cache = pygame.transform.flip(self._reflect_cache, False, True)
+            self._last_sky_snapshot = self._sky_mid
+        sky_diff = sum(abs(self._sky_mid[i] - self._last_sky_snapshot[i]) for i in range(3))
+        if sky_diff > 8:
+            self._reflect_cache.fill((0, 0, 0, 0))
+            self._reflect_cache.blit(self.bg_surf, (0, 0), (0, int(HEIGHT * 0.5), WIDTH, HEIGHT // 3))
+            self._reflect_cache = pygame.transform.flip(self._reflect_cache, False, True)
+            self._last_sky_snapshot = self._sky_mid
         reflect_alpha = int(30 + 10 * math.sin(time_float * 0.3))
         self._reflect_cache.set_alpha(reflect_alpha)
         surf.blit(self._reflect_cache, (0, HEIGHT - HEIGHT // 3))

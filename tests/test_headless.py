@@ -269,10 +269,13 @@ class TestHeadlessSimulation:
         assert 'medium' in QUALITY_PRESETS
         assert 'high' in QUALITY_PRESETS
         assert DEFAULT_QUALITY in QUALITY_PRESETS
-        expected_keys = {'bloom', 'tone_map', 'god_rays', 'vignette', 'shadow_soft', 'ao'}
+        bool_keys = {'bloom', 'tone_map', 'god_rays', 'vignette', 'shadow_soft', 'ao'}
         for level, preset in QUALITY_PRESETS.items():
-            assert expected_keys == set(preset.keys()), f"{level} missing keys"
-            assert all(isinstance(v, bool) for v in preset.values())
+            for k in bool_keys:
+                assert k in preset, f"{level} missing key {k}"
+                assert isinstance(preset[k], bool), f"{level}.{k} must be bool"
+            assert 'grass_density' in preset, f"{level} missing grass_density"
+            assert 0 < preset['grass_density'] <= 1.0, f"{level} grass_density out of range"
         assert QUALITY_PRESETS['low']['bloom'] is False
         assert QUALITY_PRESETS['high']['bloom'] is True
         assert QUALITY_PRESETS['low']['vignette'] is False

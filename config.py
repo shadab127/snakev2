@@ -11,6 +11,8 @@ TILE_HEIGHT_VARIATION = 3.0  # Max height offset for rolling terrain
 TILE_COLOR_HUE_SHIFT = 0.05  # Max hue shift (±5%)
 TILE_COLOR_BRIGHTNESS_SHIFT = 0.08  # Max brightness shift (±8%)
 TILE_COLOR_SATURATION_SHIFT = 0.06  # Max saturation shift
+TILE_HEIGHT_COLOR_VARIATION = 0.08  # Brightness variation from height (valleys darker)
+TILE_EDGE_SOFTEN = 0.94  # Edge line darkness multiplier (1.0 = no edge, lower = darker)
 
 TILE_CLIP_MARGIN = 100
 
@@ -77,18 +79,25 @@ POST_VIGNETTE_ENABLED = True
 BLOOM_THRESHOLD = 0.55
 BLOOM_INTENSITY = 0.30
 
+GRASS_DENSITY_LOW = 0.6     # Grass density multiplier for low quality
+GRASS_DENSITY_MEDIUM = 0.8  # Grass density multiplier for medium quality
+GRASS_DENSITY_HIGH = 1.0    # Grass density multiplier for high quality
+
 QUALITY_PRESETS = {
     'low': {
         'bloom': False, 'tone_map': False, 'god_rays': False,
         'vignette': False, 'shadow_soft': False, 'ao': False,
+        'grass_density': GRASS_DENSITY_LOW,
     },
     'medium': {
         'bloom': False, 'tone_map': True, 'god_rays': False,
         'vignette': True, 'shadow_soft': True, 'ao': True,
+        'grass_density': GRASS_DENSITY_MEDIUM,
     },
     'high': {
         'bloom': True, 'tone_map': True, 'god_rays': True,
         'vignette': True, 'shadow_soft': True, 'ao': True,
+        'grass_density': GRASS_DENSITY_HIGH,
     },
 }
 DEFAULT_QUALITY = 'high'
@@ -97,6 +106,7 @@ SKY_STAR_FADE_START = -0.3
 SKY_STAR_FADE_END = -0.7
 WATER_WAVE_SPEED = 0.6
 WATER_WAVE_AMP = 2.0
+WATER_HORIZON_MARGIN = 8    # Additional margin below dynamic horizon for water clip
 AMBIENT_BIRD_COUNT = 3
 STAR_PARALLAX_FACTOR = 200
 
@@ -210,6 +220,10 @@ MAX_PARTICLES = 500
 
 # Phase 07 — Per-tile depth fade
 DEPTH_FADE_STRENGTH = 0.50  # Depth fade toward sky color (0 = off)
+
+# Phase 08 — Horizon and material fade
+HORIZON_FADE_START = 0.30   # Fraction of depth range where horizon fade begins
+HORIZON_FADE_END = 0.85     # Fraction of depth range for full horizon blend
 
 # Phase 06 — Snake grounding & motion feel
 SLITHER_AMPLITUDE = 2.0   # Lateral wave amplitude in pixels (0 = off)

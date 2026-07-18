@@ -359,10 +359,14 @@ class ResourceManager:
                 base_top_color = list(TILE_TOP)
                 base_side_color = list(TILE_SIDE)
 
+            height_factor = height_offset / max(abs(TILE_HEIGHT_VARIATION), 0.1)
             moss_noise = noise['moss']
             if moss_noise > 0.15:
                 moss_t = min(1.0, (moss_noise - 0.15) * 3)
-                base_top_color = list(lerp_color(tuple(base_top_color), TILE_MOSS, moss_t * 0.35))
+                moss_strength = moss_t * 0.35
+                if height_factor < 0:
+                    moss_strength *= (1.0 - height_factor * 0.5)
+                base_top_color = list(lerp_color(tuple(base_top_color), TILE_MOSS, moss_strength))
 
             dirt_noise = noise['dirt']
             if dirt_noise > 0.2:
@@ -391,6 +395,12 @@ class ResourceManager:
             s_s = max(0.05, min(1.0, s_s + sat_shift * 0.7))
             v_s = max(0.15, min(1.0, v_s + bright_shift * 0.7))
             base_side_color = list(hsv_to_rgb(h_s, s_s, v_s))
+
+            # Height-based color variation: darker valleys, lighter peaks
+            height_color_factor = 1.0 + height_factor * TILE_HEIGHT_COLOR_VARIATION
+            for i in range(3):
+                base_top_color[i] = max(0, min(255, int(base_top_color[i] * height_color_factor)))
+                base_side_color[i] = max(0, min(255, int(base_side_color[i] * height_color_factor)))
 
             grass_seed = noise['grass']
             grass_blades = []
@@ -423,6 +433,7 @@ class ResourceManager:
                 'tex_variation': tex_variation,
                 'dist_from_center': dist_from_center,
                 'dist_factor': dist_factor,
+                'height_factor': height_factor,
                 'grass_seed': grass_seed,
                 'grass_blades': grass_blades,
                 'noise': noise,
