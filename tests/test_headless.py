@@ -215,3 +215,35 @@ class TestHeadlessSimulation:
         assert capped == MAX_FRAME_DT
         assert FPS_SMOOTH_ALPHA > 0
         assert FPS_SMOOTH_ALPHA <= 0.5
+
+    def test_tile_cache_dirty_tracking(self):
+        """Dirty-tile invalidation only marks near-snake tiles, not all."""
+        from utils import all_hexes
+        game = self._start_game()
+        self._force_apple_in_front(game)
+
+        game._invalidate_all_tiles()
+        all_count = len(game._dirty_tiles)
+        assert all_count >= len(list(all_hexes())) - 10
+
+        game._dirty_tiles = set()
+        game._prev_snake_set = set(game.snake)
+        changed = set(game.snake)
+        if game.apple:
+            changed.add(game.apple)
+        game._invalidate_tiles_near(changed, radius=2)
+        assert len(game._dirty_tiles) < all_count
+        assert len(game._dirty_tiles) > 0
+
+    def test_height_map_cached(self):
+        """Precomputed height map avoids per-tile rebuild."""
+        game = self._start_game()
+        game._height_map_valid = False
+        game._height_map = {}
+        game._rebuild_height_map()
+        assert len(game._height_map) > 0
+        assert game._height_map_valid
+        keys_before = set(game._height_map.keys())
+        game._rebuild_height_map()
+        assert game._height_map_valid
+        assert set(game._height_map.keys()) == keys_before

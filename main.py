@@ -127,6 +127,10 @@ class SnakeGame:
         self._last_tile_camera_py = 0.0
         self._camera_moved_threshold = 3.5
         self._ground_cache_valid = False
+        self._dirty_tiles = set()
+        self._height_map_valid = False
+        self._height_map = {}
+        self._rebuild_height_map()
 
         self.grade_warm_flash = 0.0
         self.grade_cool_shift = 0.0
@@ -193,6 +197,28 @@ class SnakeGame:
 
     def _request_full_redraw(self):
         self._full_redraw_requested = True
+
+    def _invalidate_tiles_near(self, coords, radius=2):
+        for q, r in coords:
+            for dq in range(-radius, radius + 1):
+                for dr in range(-radius, radius + 1):
+                    nq, nr = q + dq, r + dr
+                    if in_bounds(nq, nr):
+                        self._dirty_tiles.add((nq, nr))
+        self._tile_cache_valid = False
+
+    def _invalidate_all_tiles(self):
+        self._dirty_tiles = set(all_hexes())
+        self._tile_cache_valid = False
+
+    def _rebuild_height_map(self):
+        if self._height_map_valid:
+            return
+        self._height_map = {}
+        for (_q, _r), _s in self._tile_static_cache.items():
+            if 'height_offset' in _s:
+                self._height_map[(_q, _r)] = _s['height_offset']
+        self._height_map_valid = True
 
     def _merge_rects(self, rects):
         if not rects:
@@ -305,21 +331,30 @@ class SnakeGame:
             self._full_redraw_requested = False
             return
 
-        if self._tile_cache_valid:
-            cx, cy = self.camera.eye[0], self.camera.eye[1]
-            dx = cx - self._last_tile_camera_px
-            dy = cy - self._last_tile_camera_py
-            camera_moved = math.hypot(dx, dy) >= self._camera_moved_threshold
-            if not camera_moved:
-                return
+        cx, cy = self.camera.eye[0], self.camera.eye[1]
+        dx = cx - self._last_tile_camera_px
+        dy = cy - self._last_tile_camera_py
+        camera_moved = math.hypot(dx, dy) >= self._camera_moved_threshold
+        has_dirty = len(self._dirty_tiles) > 0
+        if self._tile_cache_valid and not camera_moved and not has_dirty:
+            return
+        rebuild_all = not self._tile_cache_valid or camera_moved
 
-        self._last_tile_camera_px, self._last_tile_camera_py = self.camera.eye[0], self.camera.eye[1]
-        self._tile_cache.fill((0, 0, 0, 0))
+        self._last_tile_camera_px, self._last_tile_camera_py = cx, cy
         time_float = self.render_time
         tile_cache = self._tile_static_cache
         all_hex = self._all_hexes_cache
+
+        if rebuild_all:
+            self._tile_cache.fill((0, 0, 0, 0))
+            dirty_set = set(all_hex)
+            self._dirty_tiles = set()
+        else:
+            dirty_set = self._dirty_tiles.copy()
+            self._dirty_tiles = set()
+
         tile_items = []
-        for q, r in all_hex:
+        for q, r in dirty_set:
             cx_t, cy_t = tile_cache[(q, r)]['center_world']
             sx, sy, depth = self.camera.project(cx_t, cy_t, 0)
             if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
@@ -344,11 +379,11 @@ class SnakeGame:
         dist_from_center = static['dist_from_center']
         height_offset = static.get('height_offset', 0)
 
-        height_map = {}
-        for (_q, _r), _s in self._tile_static_cache.items():
-            if 'height_offset' in _s:
-                height_map[(_q, _r)] = _s['height_offset']
-        height_map[(q, r)] = height_offset
+        self._rebuild_height_map()
+        height_map = self._height_map
+        if (q, r) not in height_map:
+            height_map = dict(height_map)
+            height_map[(q, r)] = height_offset
 
         corner_neighbor_map = [
             [DIR_VECTORS[0], DIR_VECTORS[5]],
@@ -539,6 +574,9 @@ class SnakeGame:
         self.score_count_up = 0
         self.new_record_bounce_timer = 0
         self._wrap_frame = False
+        self._invalidate_all_tiles()
+        self._prev_snake_set = set(self.snake)
+        self._height_map_valid = False
         hx, hy = hex_to_pixel(self.snake[0][0], self.snake[0][1])
         self.camera.snap_to(hx, hy, self.direction)
         self.audio.resume()
@@ -683,6 +721,15 @@ class SnakeGame:
             for sq, sr in self.snake:
                 self.path_history.append((sq, sr))
 
+        changed_tiles = set(self.snake)
+        if hasattr(self, '_prev_snake_set'):
+            changed_tiles.update(self._prev_snake_set)
+        self._prev_snake_set = set(self.snake)
+        if self.apple:
+            changed_tiles.add(self.apple)
+        if ate:
+            changed_tiles.add(old_apple)
+        self._invalidate_tiles_near(changed_tiles, radius=2)
         self._request_full_redraw()
         return True
 
@@ -694,7 +741,7 @@ class SnakeGame:
         self.particles.emit_death_burst(hx, hy, 2)
         self.camera.death_pullout()
         self.grade_death_darken = 0.5
-        self._tile_cache_valid = False
+        self._invalidate_all_tiles()
         self._request_full_redraw()
         # Mark tiles under snake for compression effect
         self._death_snake_set = set(self.snake)
@@ -1074,7 +1121,7 @@ class SnakeGame:
             if self.eat_flash < 0:
                 self.eat_flash = 0
                 self.grade_warm_flash = 0
-            self._tile_cache_valid = False
+            self._invalidate_all_tiles()
             self._request_full_redraw()
 
         if self.screen_shake > 0:
@@ -1139,13 +1186,11 @@ class SnakeGame:
         height_offset = static.get('height_offset', 0)
         noise = static.get('noise', {})
 
-        # Build a height map from tile cache for smooth corner interpolation
-        height_map = {}
-        for (_q, _r), _s in self._tile_static_cache.items():
-            if 'height_offset' in _s:
-                height_map[(_q, _r)] = _s['height_offset']
-        # Add current tile
-        height_map[(q, r)] = height_offset
+        self._rebuild_height_map()
+        height_map = self._height_map
+        if (q, r) not in height_map:
+            height_map = dict(height_map)
+            height_map[(q, r)] = height_offset
 
         # Compute per-corner heights (average of up to 3 neighboring tiles)
         corner_heights = []
