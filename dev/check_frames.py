@@ -73,7 +73,9 @@ FPS_FRAMES = 50
 GAMEPLAY_STEPS = 50
 
 OUT_DIR = os.path.join(os.path.dirname(__file__), "screenshots")
+BASELINE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tests", "baseline")
 os.makedirs(OUT_DIR, exist_ok=True)
+os.makedirs(BASELINE_DIR, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Pixel-sampling helpers
@@ -778,7 +780,7 @@ def check_body_beads(game):
 
 
 def check_frame_pacing(game):
-    """Over 120 rendered frames, 95th-percentile frame time ≤ 1.5× median."""
+    """Over 120 frames, 95th-percentile full-frame time ≤ 1.5× median."""
     _drain()
     game.state = GameState.PLAYING
     game.reset()
@@ -786,15 +788,17 @@ def check_frame_pacing(game):
     for _ in range(30):
         game.update(FIXED_DT)
     for _ in range(5):
+        game.handle_events()
         game.render()
     frame_times = []
     for _ in range(120):
         t0 = time.perf_counter()
+        game.handle_events()
+        if game.state == GameState.PLAYING:
+            game.update(FIXED_DT)
         game.render()
         elapsed = (time.perf_counter() - t0) * 1000
         frame_times.append(elapsed)
-        if game.state == GameState.PLAYING:
-            game.update(FIXED_DT)
     if not frame_times:
         return False, "no frame times"
     sorted_t = sorted(frame_times)
@@ -815,16 +819,145 @@ def check_speed_sanity():
     msg = f"BASE={BASE_MOVE_INTERVAL:.2f}s MIN={MIN_MOVE_INTERVAL:.2f}s"
     return ok, msg
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+
+def _capture_baseline(game):
+    """Capture all states at fixed time and save as baseline."""
+    global _TIME_OVERRIDE
+    saved = _TIME_OVERRIDE
+    _TIME_OVERRIDE = 2.0
+    game.render_time = 2.0
+    game.ambient_time = 2.0
+    _drain()
+    game.state = GameState.START
+    game._menu_count = 3
+    game.menu_selection = 0
+    for _ in range(10):
+        game.render_time += 1 / 60
+        game.render()
+    base_path = os.path.join(BASELINE_DIR, "start_screen.png")
+    pygame.image.save(game.screen, base_path)
+
+    game.reset()
+    game.audio._ok = False
+    for _ in range(30):
+        game.update(FIXED_DT)
+    game.render_time = 2.0
+    game.ambient_time = 2.0
+    game.render()
+    base_path = os.path.join(BASELINE_DIR, "gameplay.png")
+    pygame.image.save(game.screen, base_path)
+
+    game.state = GameState.PAUSED
+    game.menu_selection = 0
+    game._menu_count = 3
+    game.render()
+    base_path = os.path.join(BASELINE_DIR, "paused.png")
+    pygame.image.save(game.screen, base_path)
+
+    game.state = GameState.GAME_OVER
+    game.score = 50
+    game.score_count_up = 50
+    game.score_count_up_timer = 0
+    game._countup_started = True
+    game.death_anim = {"timer": 0.0, "phase": "none"}
+    game.grade_death_darken = 0.0
+    game.fade_alpha = 0
+    game.fade_target = 0
+    game._transitioning = False
+    game.render()
+    base_path = os.path.join(BASELINE_DIR, "game_over.png")
+    pygame.image.save(game.screen, base_path)
+
+    metrics = {}
+    for name in ["start_screen", "gameplay", "paused", "game_over"]:
+        path = os.path.join(BASELINE_DIR, f"{name}.png")
+        if os.path.exists(path):
+            surf = pygame.image.load(path)
+            meta = analyze_frame(surf, name)
+            metrics[name] = {
+                'mean_luma': round(meta['mean_luma'], 2),
+                'mean_sat': round(meta['mean_sat'], 2),
+                'distinct': meta['distinct'],
+            }
+    import json
+    with open(os.path.join(BASELINE_DIR, "metrics.json"), 'w') as f:
+        json.dump(metrics, f, indent=2)
+    _TIME_OVERRIDE = saved
+
+
+def _capture_current_for_compare(game):
+    """Capture current state at fixed time for baseline comparison."""
+    global _TIME_OVERRIDE
+    saved = _TIME_OVERRIDE
+    _TIME_OVERRIDE = 2.0
+    for state_name, state_fn in [
+        ("start_screen", capture_start_screen),
+        ("gameplay", capture_gameplay),
+        ("paused", capture_paused),
+        ("game_over", capture_game_over),
+    ]:
+        result = state_fn(game)
+        paths = result if isinstance(result, list) else [result]
+        surf = pygame.image.load(paths[-1])
+        out_path = os.path.join(OUT_DIR, f"{state_name}_compare.png")
+        pygame.image.save(surf, out_path)
+    _TIME_OVERRIDE = saved
+
+
+def _compare_baseline():
+    """Compare current captures against baseline using pixel metrics."""
+    import json
+    all_ok = True
+    meta_file = os.path.join(BASELINE_DIR, "metrics.json")
+
+    if not os.path.exists(meta_file):
+        print("No baseline metrics found. Run --save-baseline first.")
+        return False
+
+    with open(meta_file, 'r') as f:
+        baseline = json.load(f)
+
+    for state_name in ["start_screen", "gameplay", "paused", "game_over"]:
+        header_path = os.path.join(OUT_DIR, f"{state_name}_compare.png")
+        if not os.path.exists(header_path):
+            header_path = os.path.join(OUT_DIR, f"{state_name}.png")
+        if not os.path.exists(header_path):
+            print(f"  {state_name}: MISSING")
+            all_ok = False
+            continue
+        surf = pygame.image.load(header_path)
+        meta = analyze_frame(surf, state_name)
+        base = baseline.get(state_name, {})
+
+        ml_ok = abs(meta['mean_luma'] - base.get('mean_luma', 0)) <= 8.0
+        sat_ok = abs(meta['mean_sat'] - base.get('mean_sat', 0)) <= 8.0
+        dc_ok = abs(meta['distinct'] - base.get('distinct', 0)) <= 200
+        ok = ml_ok and sat_ok and dc_ok
+        status = "PASS" if ok else "FAIL"
+        if not ok:
+            all_ok = False
+        print(f"  {state_name}: luma_diff={abs(meta['mean_luma'] - base.get('mean_luma', 0)):.1f} "
+              f"sat_diff={abs(meta['mean_sat'] - base.get('mean_sat', 0)):.1f} "
+              f"dc_diff={abs(meta['distinct'] - base.get('distinct', 0))} {status}")
+
+    if all_ok:
+        print("Baseline comparison: ALL PASS")
+    else:
+        print("Baseline comparison: SOME FAIL")
+    return all_ok
 
 def main():
     global _TIME_OVERRIDE
     import argparse
+    import json
+    import shutil
     parser = argparse.ArgumentParser(description="Check SnakeV2 frames")
     parser.add_argument("--time", type=float, default=None,
                         help="Set ambient time for capture (0.0=midnight, 0.5=noon)")
+    parser.add_argument("--save-baseline", action="store_true",
+                        help="Save current captures as visual regression baseline")
+    parser.add_argument("--compare-baseline", action="store_true",
+                        help="Compare current captures against saved baseline")
     args = parser.parse_args()
     _TIME_OVERRIDE = args.time
 
@@ -836,6 +969,20 @@ def main():
         game.render_time = _TIME_OVERRIDE
         game.ambient_time = _TIME_OVERRIDE
     _drain()
+
+    if args.save_baseline:
+        print("Saving baseline screenshots...")
+        _capture_baseline(game)
+        print(f"Baseline saved to {BASELINE_DIR}")
+        pygame.quit()
+        sys.exit(0)
+
+    if args.compare_baseline:
+        print("Comparing against baseline...")
+        _capture_current_for_compare(game)
+        ok = _compare_baseline()
+        pygame.quit()
+        sys.exit(0 if ok else 1)
 
     lines = []
     all_pass = True

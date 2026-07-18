@@ -1,0 +1,22 @@
+{
+  "start_screen": {
+    "mean_luma": 46.89,
+    "mean_sat": 31.79,
+    "distinct": 1387
+  },
+  "gameplay": {
+    "mean_luma": 63.04,
+    "mean_sat": 39.33,
+    "distinct": 1908
+  },
+  "paused": {
+    "mean_luma": 18.99,
+    "mean_sat": 12.87,
+    "distinct": 565
+  },
+  "game_over": {
+    "mean_luma": 14.34,
+    "mean_sat": 10.79,
+    "distinct": 410
+  }
+}
