@@ -1,58 +1,47 @@
-# SnakeV2 — Fix Plan v6
+# SnakeV2 Small-Step Smooth World Plan v8
 
-Read this file fully. Do ONLY your assigned phase. Screenshots of today's build:
-`symptom_straight.png`, `symptom_turn.png`.
+## Status
 
-## Verified problems (2026-07-06)
+This is the active plan for future work. It breaks the three project goals into
+small, independently testable phases. Superseded plan files are removed so
+only one plan gives implementation instructions.
 
-1. **The last agent deleted the guardrails.** Commit `c60377c` ("Simplify
-   codebase") deleted `tests/`, `dev/check_frames.py`, `AGENTS.md`, and the
-   implementation plan. Phase 01 restores them. THIS MUST NEVER HAPPEN AGAIN —
-   see rule 1.
-2. **Body snaps forward every move step.** Measured per-frame body movement:
-   ~0.4 world-units for 8 frames, then a 52.5-unit jump (one full cell) at the
-   step. Cause: the high-res body spline lerps between ADJACENT high-res
-   samples (1/10 cell apart) instead of advancing one full cell per step. The
-   head/camera (low-res spline, 1 cell spacing) move smoothly — the body
-   visibly snaps ~7×/second. This is the remaining "not smooth".
-3. **Snake reads as a chain of green spheres.** The body is still drawn as
-   overlapping sphere sprites (`generate_sphere_sprite`, ring pattern +
-   specular dot per sample). v5 required flat cross-section shading; the agent
-   kept the sphere sprites.
-4. **Snake is too fast.** `BASE_MOVE_INTERVAL = 0.15` → 6.7 cells/sec at
-   score 0. Way too fast for a starting speed.
-5. **Shadow looks cheap.** Per-sample dark quads overlap → double-darkened
-   patches and a square blotch behind the head.
-6. **World blemishes:** blue water stripes still leak into the sky mid-turn
-   (see `symptom_turn.png` top-right); tile edges are thick dark bevel bands
-   that read as black outlines.
+## Rules
 
-## Rules — follow exactly
+1. Do one phase at a time. Do not combine later work into an earlier patch.
+2. Before and after every phase, run `python -m pytest tests/ -q` and
+   `python dev/check_frames.py`.
+3. Measure the phase's stated scenario before changing it, then record the
+   result after the change.
+4. Keep gameplay state canonical. Presentation-only state must not alter score,
+   food, collision, persistence, or controls.
+5. Put new tuning values in `config.py` and add a focused regression test.
+6. Keep UI readable and upright at all times, including world flips.
 
-1. NEVER delete or rewrite `tests/`, `dev/`, `AGENTS.md`, or
-   `implementation_plan/`. No "cleanup" or "simplification" commits. If a file
-   seems dead, note it in the changelog — do not delete it.
-2. Do ONLY what your phase lists under **Do**. Touch ONLY the files under
-   **Files**.
-3. Before starting and before declaring done, run:
-   `python dev/check_frames.py` (exit 0 required at done) and
-   `python -m pytest tests/ -q` (green required). Use `.venv/bin/python` if
-   `python` lacks pygame.
-4. Never loosen or delete a checker check. Add only what your phase says.
-5. New checks must FAIL on the pre-fix build and PASS after — prove it by
-   running the checker before your code change.
-6. Look at the screenshots your phase says to save; if they don't match the
-   Done description, you are not done.
-7. Tunables in `config.py`. One short `CHANGELOG.md` entry. Small diffs.
+## Ordered Phases
 
-## Phases (strict order)
+| Phase | Small Deliverable |
+| --- | --- |
+| 01 | Accurate frame-time instrumentation |
+| 02 | Stable frame pacing and bounded catch-up |
+| 03 | Reuse sky, water, and UI render surfaces |
+| 04 | Precompute and stabilize terrain caching |
+| 05 | Bound snake, shadow, and particle render work |
+| 06 | Make renderer selection and quality presets explicit |
+| 07 | Capture a durable visual regression baseline |
+| 08 | Improve tile, horizon, water, and vegetation materials |
+| 09 | Improve snake head, body, and silhouette |
+| 10 | Unify lighting, shadows, food, and particles |
+| 11 | Define one periodic board topology |
+| 12 | Add continuous unwrapped visual movement |
+| 13 | Render periodic terrain and world objects |
+| 14 | Add the dive and 180-degree world-flip state machine |
+| 15 | Add true under-seam occlusion and transition effects |
+| 16 | Run the full wrap, performance, and visual sign-off matrix |
 
-| Phase | Fixes |
-|---|---|
-| 01 | restore deleted tests/checker/AGENTS.md |
-| 02 | body snap → truly smooth motion (#2) |
-| 03 | speed tuning (#4) |
-| 04 | body look: tube, not spheres (#3) |
-| 05 | soft shadow (#5) |
-| 06 | world cleanup: water stripes, tile edges, horizon (#6) |
-| 07 | human sign-off |
+## Completion
+
+The plan is complete only after Phase 16 passes on the software renderer and,
+when available, the GL renderer. Manual testing must cover long snakes, all six
+directions, corner wraps, food pickup, pause, death, restart, and repeated
+world flips on a real display.

@@ -103,4 +103,4 @@ python -m unittest discover tests/ -v
 - Tests use `SDL_VIDEODRIVER=dummy` (set in `conftest.py`) for headless operation.
 
 ## Guardrails
-1. NEVER delete or rewrite `tests/`, `dev/`, `AGENTS.md`, or `implementation_plan/`. No "cleanup" or "simplification" commits. If a file seems dead, note it in the changelog — do not delete it.
+1. Keep `tests/`, `dev/`, `AGENTS.md`, and active implementation plans accurate and useful. Delete or truncate files that are obsolete, superseded, or no longer useful, replacing active guidance when needed. Never delete or weaken tests or development checks merely to make a change pass.
