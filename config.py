@@ -26,9 +26,9 @@ CAM_3D_NEAR = 10
 CAM_3D_FAR = 2000
 RENDER_FPS = 60
 FIXED_DT = 1.0 / 180.0
-BASE_MOVE_INTERVAL = 0.15
-MIN_MOVE_INTERVAL = 0.035
-SPEED_DECAY_PER_POINT = 0.0008
+BASE_MOVE_INTERVAL = 0.35
+MIN_MOVE_INTERVAL = 0.12
+SPEED_DECAY_PER_POINT = 0.004
 
 DIR_VECTORS = [(1, 0), (0, 1), (-1, 1), (-1, 0), (0, -1), (1, -1)]
 
@@ -57,6 +57,7 @@ APPLE_EMISSIVE = (60, 10, 15)
 TILE_EDGE_EMISSIVE = (20, 60, 30)
 
 SHADOW_ALPHA = 50
+SHADOW_SOFT = True
 SHADOW_SOFTNESS = 0.6
 SHADOW_MAX_LENGTH = 60
 AO_TILE_OCCUPIED = 0.3
@@ -179,7 +180,7 @@ PARTICLE_AIR_DRAG = 0.99
 MAX_PARTICLES = 500
 
 # Phase 07 — Per-tile depth fade
-DEPTH_FADE_STRENGTH = 0.25  # Depth fade toward sky color (0 = off, reproduces phase-06)
+DEPTH_FADE_STRENGTH = 0.50  # Depth fade toward sky color (0 = off)
 
 # Phase 06 — Snake grounding & motion feel
 SLITHER_AMPLITUDE = 2.0   # Lateral wave amplitude in pixels (0 = off)
