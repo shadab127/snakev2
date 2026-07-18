@@ -67,6 +67,13 @@ class Particle:
             return
 
         r, g, b = self.color
+        if game is not None:
+            amb = getattr(game, '_ambient', 1.0)
+            sc = getattr(game, '_sun_color', (255, 255, 255))
+            tone = min(1.0, 0.65 + amb * 0.35)
+            r = int(r * tone * 0.8 + sc[0] * (1.0 - tone) * 0.2 * (r / 255.0))
+            g = int(g * tone * 0.8 + sc[1] * (1.0 - tone) * 0.2 * (g / 255.0))
+            b = int(b * tone * 0.8 + sc[2] * (1.0 - tone) * 0.2 * (b / 255.0))
 
         if self.particle_type == 'spark':
             length = s * 3

@@ -1856,7 +1856,11 @@ class SnakeGame:
             small = pygame.transform.smoothscale(shadow_surf, (small_w, small_h))
             shadow_surf = pygame.transform.smoothscale(small, (bw, bh))
 
-        shadow_surf.set_alpha(SHADOW_ALPHA)
+        shadow_alpha = SHADOW_ALPHA
+        if self.death_anim['phase'] != 'none':
+            death_t = 1.0 - min(1.0, self.death_anim['timer'] / DEATH_ANIM_DURATION)
+            shadow_alpha = int(SHADOW_ALPHA * (1.0 - death_t))
+        shadow_surf.set_alpha(shadow_alpha)
         surf.blit(shadow_surf, (offset_x, offset_y))
 
     def draw_snake_segment(self, surf, idx, q, r, time_float):
@@ -2049,6 +2053,11 @@ class SnakeGame:
             sprite = pygame.transform.smoothscale(self.master_apple_sprite, (display_sz, display_sz))
             self._apple_sprites[display_sz] = sprite
         surf.blit(sprite, (int(sx_p - display_sz // 2), int(sy_p - display_sz // 2)))
+        if self._ambient < 1.0:
+            tint = pygame.Surface((display_sz, display_sz), pygame.SRCALPHA)
+            tint_sun = mul_color(self._sun_color, (1.0 - self._ambient) * 0.15)
+            tint.fill((*tint_sun, int((1.0 - self._ambient) * 40)))
+            surf.blit(tint, (int(sx_p - display_sz // 2), int(sy_p - display_sz // 2)))
 
         sx_top, sy_top, _ = self.camera.project(cx, cy, bob + 2)
         if sx_top == -999:
@@ -2431,10 +2440,11 @@ class SnakeGame:
                 if glow_surf is None:
                     d = glow_r * 2
                     glow_surf = pygame.Surface((d, d), pygame.SRCALPHA)
+                    glow_tint = lerp_color(APPLE_BASE, self._sun_color, 0.25)
                     for i in range(glow_r, 0, -1):
                         a = int(35 * (1 - i / glow_r))
                         if a > 0:
-                            pygame.draw.circle(glow_surf, (*APPLE_BASE, a), (glow_r, glow_r), i)
+                            pygame.draw.circle(glow_surf, (*glow_tint, a), (glow_r, glow_r), i)
                     self._apple_glow_sprites[glow_r] = glow_surf
                 glow_surf.set_alpha(int((0.5 + 0.5 * math.sin(time_float * 3)) * 255))
                 surf.blit(glow_surf, (int(sx - glow_r + shake_x), int(sy - glow_r + shake_y)), special_flags=pygame.BLEND_ADD)
