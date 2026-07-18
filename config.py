@@ -247,6 +247,12 @@ SCORE_POP_DURATION = 0.3
 SPEED_INDICATOR_DOTS = 8
 PAUSE_BLUR_ALPHA = 180
 
+# Phase 14 — Wrap transition (world flip)
+WRAP_TRANSITION_DURATION = 0.55
+WRAP_DIVE_FRAC = 0.35      # fraction of duration for dive phase
+WRAP_ROLL_FRAC = 0.30      # fraction of duration for roll phase
+WRAP_DIVE_DEPTH = 12.0     # max head z-depth during dive
+
 # Phase 13 — Persistence
 PERSISTENCE_DIR = None  # None = auto-detect via platformdirs / ~/.snakev2/
 SAVE_FILENAME = 'snakev2_save.json'

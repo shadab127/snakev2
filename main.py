@@ -134,6 +134,8 @@ class SnakeGame:
         self._wrap_frame = False
         self._visual_dq = 0
         self._visual_dr = 0
+        self._wrap_transition = {'active': False, 'timer': 0.0, 'duration': 0.0,
+                                 'phase': 'none', 'roll_angle': 0.0, 'dive_amount': 0.0}
 
         self._last_camera_px = 0.0
         self._last_camera_py = 0.0
@@ -608,6 +610,8 @@ class SnakeGame:
         self.prev_snake_positions = {}
         self._visual_dq = 0
         self._visual_dr = 0
+        self._wrap_transition = {'active': False, 'timer': 0.0, 'duration': 0.0,
+                                 'phase': 'none', 'roll_angle': 0.0, 'dive_amount': 0.0}
         self.path_history.clear()
         for sq, sr in self.snake:
             self.path_history.append((sq, sr, 0, 0))
@@ -737,6 +741,12 @@ class SnakeGame:
             self._visual_dq += dq_add
             self._visual_dr += dr_add
             self._wrap_frame = True
+            self._wrap_transition = {'active': True,
+                                     'timer': WRAP_TRANSITION_DURATION,
+                                     'duration': WRAP_TRANSITION_DURATION,
+                                     'phase': 'dive',
+                                     'roll_angle': 0.0,
+                                     'dive_amount': 0.0}
 
         vis_dq = self._visual_dq
         vis_dr = self._visual_dr
@@ -1162,6 +1172,35 @@ class SnakeGame:
             progress = 1.0 - max(0, self.eat_anim['timer']) / EAT_BULGE_DURATION
             self.eat_anim['bulge_progress'] = progress
             self.eat_anim['bulge_idx'] = min(len(self.snake) - 1, int(progress * len(self.snake)))
+
+        # Wrap transition: dive → world roll → emerge
+        if self._wrap_transition['active']:
+            wt = self._wrap_transition
+            wt['timer'] -= dt
+            if wt['timer'] <= 0:
+                wt['active'] = False
+                wt['timer'] = 0
+                wt['phase'] = 'none'
+                wt['roll_angle'] = 0.0
+                wt['dive_amount'] = 0.0
+            else:
+                progress = 1.0 - wt['timer'] / wt['duration']
+                dive_end = WRAP_DIVE_FRAC
+                roll_end = dive_end + WRAP_ROLL_FRAC
+                if progress <= dive_end:
+                    wt['phase'] = 'dive'
+                    wt['dive_amount'] = progress / dive_end
+                    wt['roll_angle'] = 0.0
+                elif progress <= roll_end:
+                    wt['phase'] = 'roll'
+                    wt['dive_amount'] = 1.0
+                    roll_p = (progress - dive_end) / WRAP_ROLL_FRAC
+                    wt['roll_angle'] = math.pi * roll_p
+                else:
+                    wt['phase'] = 'emerge'
+                    emerge_p = (progress - roll_end) / (1.0 - roll_end) if progress < 1.0 else 1.0
+                    wt['dive_amount'] = 1.0 - emerge_p
+                    wt['roll_angle'] = math.pi
 
         # Apple spawn anim
         if self.apple_anim['spawn_timer'] > 0:
@@ -1641,6 +1680,14 @@ class SnakeGame:
                 warm_glow = (255, 200, 100)
                 c = add_color(c, mul_color(warm_glow, eat_glow))
 
+            # Wrap transition fade: body near seam fades during dive/emerge
+            if self._wrap_transition['active']:
+                wt = self._wrap_transition
+                seam_t = 0.95 - 0.2 * wt['dive_amount']
+                if t > seam_t:
+                    seam_fade = 1.0 - min(1.0, (t - seam_t) / 0.1)
+                    c = mul_color(c, max(0.3, seam_fade))
+
             # Death fade and dissolve
             if self.death_anim['phase'] != 'none':
                 death_t = 1.0 - min(1.0, self.death_anim['timer'] / DEATH_ANIM_DURATION)
@@ -1876,6 +1923,8 @@ class SnakeGame:
             shadow_surf = pygame.transform.smoothscale(small, (bw, bh))
 
         shadow_alpha = SHADOW_ALPHA
+        if self._wrap_transition['active']:
+            shadow_alpha = int(SHADOW_ALPHA * (1.0 - self._wrap_transition['dive_amount'] * 0.6))
         if self.death_anim['phase'] != 'none':
             death_t = 1.0 - min(1.0, self.death_anim['timer'] / DEATH_ANIM_DURATION)
             shadow_alpha = int(SHADOW_ALPHA * (1.0 - death_t))
@@ -1924,11 +1973,13 @@ class SnakeGame:
 
         # Project at tile surface height (z=0) — snake sits on tiles
         head_z = 0
+        if idx == 0 and self._wrap_transition['active']:
+            head_z -= self._wrap_transition['dive_amount'] * WRAP_DIVE_DEPTH
         if idx == 0 and self.eat_anim['timer'] > EAT_BULGE_DURATION - EAT_SQUASH_DURATION:
             eat_t = 1.0 - (self.eat_anim['timer'] - (EAT_BULGE_DURATION - EAT_SQUASH_DURATION)) / EAT_SQUASH_DURATION
             if 0 <= eat_t <= 1:
                 dip = math.sin(eat_t * math.pi) * -EAT_HEAD_DIP
-                head_z = dip
+                head_z += dip
         sx, sy, depth = self.camera.project(cx, cy, head_z)
         if sx == -999:
             return
@@ -2491,6 +2542,15 @@ class SnakeGame:
 
         if self.settings.get('vignette', POST_VIGNETTE_ENABLED):
             surf.blit(self.vignette_surf, (0, 0))
+
+        # Wrap transition world flip: rotate rendered world before UI
+        if self._wrap_transition['active'] and self._wrap_transition['roll_angle'] > 0.01:
+            angle = -math.degrees(self._wrap_transition['roll_angle'])
+            self._flip_cache = pygame.transform.rotate(surf, angle)
+            ox = (self._flip_cache.get_width() - WIDTH) // 2
+            oy = (self._flip_cache.get_height() - HEIGHT) // 2
+            surf.fill((0, 0, 0))
+            surf.blit(self._flip_cache, (-ox, -oy))
 
         _t0 = time.perf_counter()
         if self.state == GameState.START:
