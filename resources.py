@@ -438,7 +438,17 @@ class ResourceManager:
 
     def _update_sky(self, time_float, day_cycle):
         sky_top, sky_mid, sky_hor = compute_sky_color(time_float)
-        self.bg_surf = pygame.Surface((WIDTH, HEIGHT))
+        if hasattr(self, '_last_sky_colors'):
+            lt, lm, lh = self._last_sky_colors
+            color_diff = (abs(sky_top[0] - lt[0]) + abs(sky_top[1] - lt[1]) + abs(sky_top[2] - lt[2])
+                        + abs(sky_mid[0] - lm[0]) + abs(sky_mid[1] - lm[1]) + abs(sky_mid[2] - lm[2])
+                        + abs(sky_hor[0] - lh[0]) + abs(sky_hor[1] - lh[1]) + abs(sky_hor[2] - lh[2]))
+            if color_diff < 6:
+                return
+        self._last_sky_colors = (sky_top, sky_mid, sky_hor)
+        if not hasattr(self, '_sky_render_surf') or self._sky_render_surf.get_width() != WIDTH:
+            self._sky_render_surf = pygame.Surface((WIDTH, HEIGHT))
+        self._sky_render_surf.fill((0, 0, 0))
         for y in range(0, HEIGHT, 2):
             t = y / HEIGHT
             if t < 0.5:
@@ -447,7 +457,8 @@ class ResourceManager:
             else:
                 local_t = (t - 0.5) / 0.5
                 c = lerp_color(sky_mid, sky_hor, local_t)
-            self.bg_surf.fill(c, rect=(0, y, WIDTH, 2))
+            self._sky_render_surf.fill(c, rect=(0, y, WIDTH, 2))
+        self.bg_surf = self._sky_render_surf
 
 
 
