@@ -247,3 +247,17 @@ class TestHeadlessSimulation:
         game._rebuild_height_map()
         assert game._height_map_valid
         assert set(game._height_map.keys()) == keys_before
+
+    def test_render_culling_bounds(self):
+        """Render culling bounds are defined and reasonable."""
+        from config import (SNAKE_RENDER_CULL_MARGIN, SHADOW_RENDER_CULL_MARGIN,
+                          PARTICLE_RENDER_CULL_MARGIN, MAX_CONSECUTIVE_OFFSCREEN,
+                          MAX_RENDER_SPLINE_SAMPLES, MAX_PARTICLES)
+        assert SNAKE_RENDER_CULL_MARGIN >= 40
+        assert SHADOW_RENDER_CULL_MARGIN >= 20
+        assert PARTICLE_RENDER_CULL_MARGIN >= 10
+        assert MAX_CONSECUTIVE_OFFSCREEN >= 5
+        assert MAX_CONSECUTIVE_OFFSCREEN <= 100
+        assert MAX_RENDER_SPLINE_SAMPLES >= 100
+        assert MAX_RENDER_SPLINE_SAMPLES <= 2000
+        assert MAX_PARTICLES > 0

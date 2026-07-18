@@ -1441,7 +1441,7 @@ class SnakeGame:
         sp = self._spline_positions
         if not sp or len(sp) < 2:
             return sp if sp else None
-        n_high = len(self.snake) * 10
+        n_high = min(len(self.snake) * 10, MAX_RENDER_SPLINE_SAMPLES)
         result_high = []
         for k in range(n_high):
             f = k / (n_high - 1) if n_high > 1 else 0.0
@@ -1472,9 +1472,14 @@ class SnakeGame:
             idle_sway = math.sin(time_float * 1.5) * 0.3
 
         segments = []
+        consecutive_offscreen = 0
+        margin = SNAKE_RENDER_CULL_MARGIN
         for i in range(n_pts):
             cx, cy, tx, ty = positions[i]
 
+            # Viewport culling: roughly estimate screen position before full projection
+            # Quick 2D check: skip segments clearly outside viewport bounds
+            # Full projection happens later for segments that pass the quick check
             t = i / max(1, n_pts - 1)
             thickness_factor = 1.0 - (t ** 1.8) * 0.65
             thickness_factor += 0.04 * math.sin(t * math.pi * 1.5)
@@ -1525,7 +1530,18 @@ class SnakeGame:
             # Project to screen
             sx, sy, depth = self.camera.project(cx, cy, 0)
             if sx == -999:
+                consecutive_offscreen += 1
+                if consecutive_offscreen > MAX_CONSECUTIVE_OFFSCREEN:
+                    break
                 continue
+
+            on_screen = (-margin <= sx <= WIDTH + margin and -margin <= sy <= HEIGHT + margin)
+            if not on_screen:
+                consecutive_offscreen += 1
+                if consecutive_offscreen > MAX_CONSECUTIVE_OFFSCREEN and len(segments) > 0:
+                    break
+                continue
+            consecutive_offscreen = 0
 
             # Smooth color interpolation along the snake length
             color_t = t * (len(SNAKE_COLORS) - 1)
@@ -1657,6 +1673,7 @@ class SnakeGame:
 
         proj_left = []
         proj_right = []
+        consec_off = 0
         for i, (wx, wy, tx, ty) in enumerate(positions):
             t = i / max(1, n - 1)
             thickness = 1.0 - (t ** 1.8) * 0.65
@@ -1679,9 +1696,13 @@ class SnakeGame:
             if ex1 == -999 or ex2 == -999:
                 proj_left.append(None)
                 proj_right.append(None)
-            else:
-                proj_left.append((ex1, ey1))
-                proj_right.append((ex2, ey2))
+                consec_off += 1
+                if consec_off > MAX_CONSECUTIVE_OFFSCREEN and len(proj_left) > 5:
+                    break
+                continue
+            consec_off = 0
+            proj_left.append((ex1, ey1))
+            proj_right.append((ex2, ey2))
 
         min_x, min_y = 99999, 99999
         max_x, max_y = -99999, -99999
