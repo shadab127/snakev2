@@ -421,36 +421,45 @@ def _fmt_date(iso_str):
 def draw_debug_overlay(surf, game):
     timings = game._perf_timings
     fps = game.clock.get_fps()
+    stats = getattr(game, '_frame_stats', {})
 
     lines = [
-        f"FPS: {fps:.1f}",
-        f"Tiles: {timings.get('tiles', 0):.2f}ms",
-        f"Snake: {timings.get('snake', 0):.2f}ms",
-        f"Particles: {timings.get('particles', 0):.2f}ms",
-        f"Post-FX: {timings.get('post', 0):.2f}ms",
-        f"UI: {timings.get('ui', 0):.2f}ms",
-        f"Total: {timings.get('total', 0):.2f}ms",
+        f"FPS: {fps:.1f}  (frame #{getattr(game, '_frame_count', 0)})",
+        f"--- Pipeline (ms) ---",
+        f"Events:      {timings.get('events', 0):6.2f}",
+        f"Simulation:  {timings.get('simulation', 0):6.2f}",
+        f"Setup:       {timings.get('setup', 0):6.2f}",
+        f"Sky:         {timings.get('sky', 0):6.2f}",
+        f"Water:       {timings.get('water', 0):6.2f}",
+        f"Ground+Tiles:{timings.get('tiles', 0):6.2f}",
+        f"Shadow:      {timings.get('shadow', 0):6.2f}",
+        f"Snake+Apple: {timings.get('snake', 0):6.2f}",
+        f"Post-FX:     {timings.get('post', 0):6.2f}",
+        f"Particles:   {timings.get('particles', 0):6.2f}",
+        f"UI:          {timings.get('ui', 0):6.2f}",
+        f"Display:     {timings.get('display', 0):6.2f}",
+        f"--- Totals ---",
+        f"Render total:{timings.get('total', 0):6.2f}",
+        f"Frame total: {timings.get('frame', 0):6.2f}",
+        f"--- Window ({len(game._frame_times)} frames) ---",
+        f"Avg: {stats.get('avg', 0):5.1f}  Min: {stats.get('min', 0):5.1f}",
+        f"Max: {stats.get('max', 0):5.1f}  P95: {stats.get('p95', 0):5.1f}",
+        f"P99: {stats.get('p99', 0):5.1f}",
     ]
 
-    if hasattr(game, '_frame_times') and len(game._frame_times) > 1:
-        times = sorted(game._frame_times)
-        n = len(times)
-        avg_t = sum(times) / n
-        p95 = times[int(n * 0.95)]
-        max_t = times[-1]
-        lines.append(f"FT avg={avg_t:.1f}ms p95={p95:.1f}ms max={max_t:.1f}ms ({n})")
-
-    panel_w = 220
+    panel_w = 280
     panel_h = 20 + len(lines) * 20
 
     px = WIDTH - panel_w - 10
     py = 10
-    _draw_panel(surf, px, py, panel_w, panel_h, alpha=160)
+    _draw_panel(surf, px, py, panel_w, panel_h, alpha=180)
 
     for i, line in enumerate(lines):
-        color = TEXT_WHITE if i == 0 else TEXT_DIM
-        if i == 0:
-            label_surf = game.font_micro.render(line, True, TEXT_GLOW)
+        if line.startswith("---"):
+            color = (100, 160, 120)
+        elif i == 0:
+            color = TEXT_GLOW
         else:
-            label_surf = game.font_micro.render(line, True, color)
+            color = TEXT_DIM
+        label_surf = game.font_micro.render(line, True, color)
         surf.blit(label_surf, (px + 8, py + 8 + i * 20))

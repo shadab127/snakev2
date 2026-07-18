@@ -103,6 +103,11 @@ class SnakeGame:
         self._debug_overlay = False
         self._perf_timings = {}
         self._frame_times = []
+        self._frame_count = 0
+        self._wall_time = 0.0
+        self._frame_timings = {}
+        self._frame_stats = {'avg': 0.0, 'min': 0.0, 'max': 0.0, 'p95': 0.0, 'p99': 0.0}
+        self._stats_dirty = True
 
         self.water_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         self._tile_cache = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -1985,6 +1990,7 @@ class SnakeGame:
         surf = self.screen
         time_float = self.render_time
 
+        _t_setup = time.perf_counter()
         light_dir, ambient, sun_color = compute_sun_light(time_float)
         self._light_dir = light_dir
         self._ambient = ambient
@@ -2013,8 +2019,9 @@ class SnakeGame:
         if self.screen_shake > 0:
             intensity = self.screen_shake / 0.25 * 5
             shake_x, shake_y = screen_shake_offset(intensity)
+        self._perf_timings['setup'] = (time.perf_counter() - _t_setup) * 1000
 
-        _t = time.perf_counter()
+        _t_sky = time.perf_counter()
         self.resources._update_sky(time_float, self._day_cycle)
         surf.blit(self.bg_surf, (shake_x, shake_y))
 
@@ -2031,7 +2038,9 @@ class SnakeGame:
             surf.blit(self.sun_disc_surf,
                       (int(sun_px - sd_w // 2), int(sun_py - sd_w // 2)),
                       special_flags=pygame.BLEND_ADD)
+        self._perf_timings['sky'] = (time.perf_counter() - _t_sky) * 1000
 
+        _t_water = time.perf_counter()
         water_color_base = lerp_color(self._sky_mid, WATER_COLOR_1, 0.4)
         water_highlight = lerp_color(sun_color, WATER_HIGHLIGHT, 0.5)
 
@@ -2102,18 +2111,21 @@ class SnakeGame:
         surf.blit(self._reflect_cache, (0, HEIGHT - HEIGHT // 3))
 
         surf.blit(self.water_surf, (0, 0))
+        self._perf_timings['water'] = (time.perf_counter() - _t_water) * 1000
 
-        _t0 = time.perf_counter()
+        _t_ground = time.perf_counter()
         self._build_ground()
         surf.blit(self.ground_cache, (shake_x, shake_y))
         self._build_tile_cache()
-        self._perf_timings['tiles'] = (time.perf_counter() - _t0) * 1000
+        self._perf_timings['tiles'] = (time.perf_counter() - _t_ground) * 1000
 
+        _t_composite = time.perf_counter()
         self.draw_cache.fill((0, 0, 0, 0))
         self.draw_cache.blit(self._tile_cache, (0, 0))
 
         # Continuous body shadow (under depth-sorted items)
         self._draw_continuous_shadow(self.draw_cache)
+        self._perf_timings['shadow'] = (time.perf_counter() - _t_composite) * 1000
 
         _t0 = time.perf_counter()
         draw_items = []
@@ -2297,10 +2309,6 @@ class SnakeGame:
         self._perf_timings['ui'] = (time.perf_counter() - _t0) * 1000
         self._perf_timings['total'] = (time.perf_counter() - _t_frame) * 1000
 
-        self._frame_times.append(self._perf_timings['total'])
-        if len(self._frame_times) > 120:
-            self._frame_times = self._frame_times[-120:]
-
         needs_full = (self._full_redraw_requested or
                       not self._tile_cache_valid or
                       self.eat_flash > 0 or
@@ -2317,23 +2325,45 @@ class SnakeGame:
             self._prev_dirty_rects = []
             all_rects = [pygame.Rect(0, 0, WIDTH, HEIGHT)]
 
+        _t_display = time.perf_counter()
         merged = self._merge_rects(all_rects)
         if len(merged) == 1 and merged[0] == pygame.Rect(0, 0, WIDTH, HEIGHT):
             pygame.display.flip()
         else:
             pygame.display.update(merged)
+        self._perf_timings['display'] = (time.perf_counter() - _t_display) * 1000
+
+    def _compute_frame_stats(self):
+        if len(self._frame_times) < 2:
+            self._frame_stats = {'avg': 0.0, 'min': 0.0, 'max': 0.0, 'p95': 0.0, 'p99': 0.0}
+            return
+        times = sorted(self._frame_times)
+        n = len(times)
+        self._frame_stats['avg'] = sum(times) / n
+        self._frame_stats['min'] = times[0]
+        self._frame_stats['max'] = times[-1]
+        self._frame_stats['p95'] = times[int(n * 0.95)]
+        self._frame_stats['p99'] = times[int(n * 0.99)]
 
     def run(self):
         sim_accumulator = 0.0
         particle_accumulator = 0.0
         self.render_time = 0.0
+        self._wall_time = time.perf_counter()
+        self._frame_count = 0
 
         while self.state != GameState.QUIT:
+            _frame_start = time.perf_counter()
             raw_dt = self.clock.tick(RENDER_FPS) / 1000.0
-            self.handle_events()
 
+            _t_events_start = time.perf_counter()
+            self.handle_events()
+            self._perf_timings['events'] = (time.perf_counter() - _t_events_start) * 1000
+
+            _t_sim_start = time.perf_counter()
             if self.state == GameState.PLAYING:
                 sim_accumulator += raw_dt
+                sim_accumulator = min(sim_accumulator, FIXED_DT * MAX_SIM_STEPS)
                 while sim_accumulator >= FIXED_DT:
                     self.update(FIXED_DT)
                     sim_accumulator -= FIXED_DT
@@ -2348,6 +2378,7 @@ class SnakeGame:
                 self._update_game_over_countup(raw_dt)
                 self._update_transition(raw_dt)
                 particle_accumulator += raw_dt
+                particle_accumulator = min(particle_accumulator, FIXED_DT * MAX_SIM_STEPS)
                 while particle_accumulator >= FIXED_DT:
                     self.particles.update_all(FIXED_DT)
                     self.particles.clean()
@@ -2370,8 +2401,17 @@ class SnakeGame:
                 sim_accumulator = 0.0
                 particle_accumulator = 0.0
 
+            self._perf_timings['simulation'] = (time.perf_counter() - _t_sim_start) * 1000
             self.render_time += raw_dt
             self.render()
+
+            self._perf_timings['frame'] = (time.perf_counter() - _frame_start) * 1000
+            self._frame_times.append(self._perf_timings['frame'])
+            if len(self._frame_times) > FRAME_TIME_WINDOW:
+                self._frame_times = self._frame_times[-FRAME_TIME_WINDOW:]
+            self._frame_count += 1
+            self._wall_time = time.perf_counter()
+            self._compute_frame_stats()
 
         pygame.quit()
         sys.exit()
