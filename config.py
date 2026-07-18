@@ -77,6 +77,22 @@ POST_VIGNETTE_ENABLED = True
 BLOOM_THRESHOLD = 0.55
 BLOOM_INTENSITY = 0.30
 
+QUALITY_PRESETS = {
+    'low': {
+        'bloom': False, 'tone_map': False, 'god_rays': False,
+        'vignette': False, 'shadow_soft': False, 'ao': False,
+    },
+    'medium': {
+        'bloom': False, 'tone_map': True, 'god_rays': False,
+        'vignette': True, 'shadow_soft': True, 'ao': True,
+    },
+    'high': {
+        'bloom': True, 'tone_map': True, 'god_rays': True,
+        'vignette': True, 'shadow_soft': True, 'ao': True,
+    },
+}
+DEFAULT_QUALITY = 'high'
+
 SKY_STAR_FADE_START = -0.3
 SKY_STAR_FADE_END = -0.7
 WATER_WAVE_SPEED = 0.6

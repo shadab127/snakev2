@@ -261,3 +261,19 @@ class TestHeadlessSimulation:
         assert MAX_RENDER_SPLINE_SAMPLES >= 100
         assert MAX_RENDER_SPLINE_SAMPLES <= 2000
         assert MAX_PARTICLES > 0
+
+    def test_quality_presets_defined(self):
+        """Quality presets exist and are well-formed."""
+        from config import QUALITY_PRESETS, DEFAULT_QUALITY
+        assert 'low' in QUALITY_PRESETS
+        assert 'medium' in QUALITY_PRESETS
+        assert 'high' in QUALITY_PRESETS
+        assert DEFAULT_QUALITY in QUALITY_PRESETS
+        expected_keys = {'bloom', 'tone_map', 'god_rays', 'vignette', 'shadow_soft', 'ao'}
+        for level, preset in QUALITY_PRESETS.items():
+            assert expected_keys == set(preset.keys()), f"{level} missing keys"
+            assert all(isinstance(v, bool) for v in preset.values())
+        assert QUALITY_PRESETS['low']['bloom'] is False
+        assert QUALITY_PRESETS['high']['bloom'] is True
+        assert QUALITY_PRESETS['low']['vignette'] is False
+        assert QUALITY_PRESETS['high']['vignette'] is True

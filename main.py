@@ -33,8 +33,11 @@ _CLI_ARGS = {}
 
 def _parse_cli_args():
     global _CLI_ARGS
-    _CLI_ARGS = {'fullscreen': False, 'no_gl': False}
-    for arg in sys.argv[1:]:
+    _CLI_ARGS = {'fullscreen': False, 'no_gl': False, 'quality': None}
+    i = 0
+    argv = sys.argv[1:]
+    while i < len(argv):
+        arg = argv[i]
         if arg == '--version':
             print(f'SnakeV2 v{__version__}')
             sys.exit(0)
@@ -44,9 +47,17 @@ def _parse_cli_args():
             _CLI_ARGS['fullscreen'] = False
         elif arg == '--no-gl':
             _CLI_ARGS['no_gl'] = True
+        elif arg == '--quality':
+            i += 1
+            if i < len(argv) and argv[i] in QUALITY_PRESETS:
+                _CLI_ARGS['quality'] = argv[i]
+            else:
+                print(f"Invalid quality '{argv[i] if i < len(argv) else '?'}'. Use: low, medium, high")
+                sys.exit(1)
         elif arg in ('-h', '--help'):
-            print('Usage: snakev2 [--windowed] [--fullscreen] [--no-gl] [--version]')
+            print('Usage: snakev2 [--windowed] [--fullscreen] [--no-gl] [--quality low|medium|high] [--version]')
             sys.exit(0)
+        i += 1
 
 
 class SnakeGame:
@@ -170,6 +181,11 @@ class SnakeGame:
         self._settings_previous_state = None
         self._countup_started = False
         self._last_mouse_pos = (0, 0)
+        self.renderer_name = 'opengl' if self.gl_renderer.available else 'software'
+        quality_key = _CLI_ARGS.get('quality') or DEFAULT_QUALITY
+        quality_preset = QUALITY_PRESETS.get(quality_key, QUALITY_PRESETS['high'])
+        self.quality_level = quality_key
+
         self.settings = {
             'music_volume': MUSIC_VOLUME,
             'sfx_volume': SFX_VOLUME,
@@ -180,6 +196,9 @@ class SnakeGame:
             'vignette': POST_VIGNETTE_ENABLED,
             'show_fps': False,
         }
+        for k in quality_preset:
+            if k in self.settings:
+                self.settings[k] = quality_preset[k]
         saved_settings = self.persistence.get_settings()
         if saved_settings:
             for k, v in saved_settings.items():
