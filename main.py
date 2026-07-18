@@ -1527,8 +1527,14 @@ class SnakeGame:
             # Quick 2D check: skip segments clearly outside viewport bounds
             # Full projection happens later for segments that pass the quick check
             t = i / max(1, n_pts - 1)
-            thickness_factor = 1.0 - (t ** 1.8) * 0.65
+            thickness_factor = 1.0 - (t ** 2.2) * 0.65
             thickness_factor += 0.04 * math.sin(t * math.pi * 1.5)
+            if t < 0.12:
+                neck_ramp = (0.12 - t) / 0.12
+                thickness_factor += 0.15 * neck_ramp
+            if t > 0.92:
+                tail_pinch = (t - 0.92) / 0.08
+                thickness_factor *= 1.0 - 0.5 * tail_pinch
 
             # Slight overlap: segments slightly larger than their spacing
             overlap_scale = 1.08
@@ -1662,9 +1668,17 @@ class SnakeGame:
             poly = [(l0_x, l0_y), (l1_x, l1_y), (r1_x, r1_y), (r0_x, r0_y)]
             pygame.draw.polygon(surf, c, poly)
 
-        # Narrow highlight strip along top of tube
-        hl_width_frac = 0.35
-        hl_offset_frac = 0.35
+        # Dorsal highlight strip — offset by light direction, not fixed angle
+        hl_width_frac = 0.30
+        hl_offset_frac = 0.30
+        light_screen_dx = self._light_dir[0]
+        light_screen_dy = self._light_dir[1]
+        light_screen_len = math.hypot(light_screen_dx, light_screen_dy)
+        if light_screen_len > 0.001:
+            light_screen_dx /= light_screen_len
+            light_screen_dy /= light_screen_len
+        else:
+            light_screen_dx, light_screen_dy = 0.0, -1.0
         for i in range(len(body_segments) - 1):
             _, sx0, sy0, r0, c = body_segments[i]
             _, sx1, sy1, r1, _ = body_segments[i + 1]
@@ -1675,34 +1689,85 @@ class SnakeGame:
                 continue
             perp_x = -dy / dist
             perp_y = dx / dist
+            hl_dir_x = perp_x * light_screen_dx + perp_y * light_screen_dy
+            hl_dir_y = perp_y * light_screen_dx - perp_x * light_screen_dy
+            hl_dir_sign = 1.0 if hl_dir_x > 0 else -1.0
             hl_r0 = r0 * hl_width_frac
             hl_r1 = r1 * hl_width_frac
-            off_x = perp_x * (r0 * hl_offset_frac)
-            off_y = perp_y * (r0 * squash * hl_offset_frac)
-            off_x1 = perp_x * (r1 * hl_offset_frac)
-            off_y1 = perp_y * (r1 * squash * hl_offset_frac)
-            hl_l0_x = int(sx0 + off_x + perp_x * hl_r0)
-            hl_l0_y = int(sy0 + off_y + perp_y * hl_r0 * squash)
-            hl_r0_x = int(sx0 + off_x - perp_x * hl_r0)
-            hl_r0_y = int(sy0 + off_y - perp_y * hl_r0 * squash)
-            hl_l1_x = int(sx1 + off_x1 + perp_x * hl_r1)
-            hl_l1_y = int(sy1 + off_y1 + perp_y * hl_r1 * squash)
-            hl_r1_x = int(sx1 + off_x1 - perp_x * hl_r1)
-            hl_r1_y = int(sy1 + off_y1 - perp_y * hl_r1 * squash)
-            hl_c = add_color(c, (35, 35, 35))
+            off_x = perp_x * (r0 * hl_offset_frac * hl_dir_sign)
+            off_y = perp_y * (r0 * squash * hl_offset_frac * hl_dir_sign)
+            off_x1 = perp_x * (r1 * hl_offset_frac * hl_dir_sign)
+            off_y1 = perp_y * (r1 * squash * hl_offset_frac * hl_dir_sign)
+            hl_l0_x = int(sx0 + off_x + perp_x * hl_r0 * hl_dir_sign)
+            hl_l0_y = int(sy0 + off_y + perp_y * hl_r0 * squash * hl_dir_sign)
+            hl_r0_x = int(sx0 + off_x - perp_x * hl_r0 * hl_dir_sign)
+            hl_r0_y = int(sy0 + off_y - perp_y * hl_r0 * squash * hl_dir_sign)
+            hl_l1_x = int(sx1 + off_x1 + perp_x * hl_r1 * hl_dir_sign)
+            hl_l1_y = int(sy1 + off_y1 + perp_y * hl_r1 * squash * hl_dir_sign)
+            hl_r1_x = int(sx1 + off_x1 - perp_x * hl_r1 * hl_dir_sign)
+            hl_r1_y = int(sy1 + off_y1 - perp_y * hl_r1 * squash * hl_dir_sign)
+            hl_c = add_color(c, (30, 30, 30))
             hl_poly = [(hl_l0_x, hl_l0_y), (hl_l1_x, hl_l1_y),
-                       (hl_r1_x, hl_r1_y), (hl_r0_x, hl_r0_y)]
+                        (hl_r1_x, hl_r1_y), (hl_r0_x, hl_r0_y)]
             pygame.draw.polygon(surf, hl_c, hl_poly)
 
-        # End caps: neck circle (under head) and tail tip
-        _, sx0, sy0, r0, c0 = body_segments[0]
-        pygame.draw.ellipse(surf, c0,
-                            (int(sx0 - r0), int(sy0 - r0 * squash),
-                             int(r0 * 2), int(r0 * squash * 2)))
-        _, sxn, syn, rn, cn = body_segments[-1]
-        pygame.draw.ellipse(surf, cn,
-                            (int(sxn - rn), int(syn - rn * squash),
-                             int(rn * 2), int(rn * squash * 2)))
+        # Darker underside opposite the highlight side
+        us_dark = 0.78
+        us_frac = 0.40
+        for i in range(len(body_segments) - 1):
+            _, sx0, sy0, r0, c = body_segments[i]
+            _, sx1, sy1, r1, _ = body_segments[i + 1]
+            dx = sx1 - sx0
+            dy = sy1 - sy0
+            dist = math.hypot(dx, dy)
+            if dist < 0.5:
+                continue
+            perp_x = -dy / dist
+            perp_y = dx / dist
+            hl_dir_x = perp_x * light_screen_dx + perp_y * light_screen_dy
+            us_sign = -1.0 if hl_dir_x > 0 else 1.0
+            pt_l0 = (int(sx0 + perp_x * r0), int(sy0 + perp_y * r0 * squash))
+            pt_r0 = (int(sx0 - perp_x * r0), int(sy0 - perp_y * r0 * squash))
+            pt_l1 = (int(sx1 + perp_x * r1), int(sy1 + perp_y * r1 * squash))
+            pt_r1 = (int(sx1 - perp_x * r1), int(sy1 - perp_y * r1 * squash))
+            mid0_x = sx0 + perp_x * r0 * us_sign * (1.0 - us_frac)
+            mid0_y = sy0 + perp_y * r0 * squash * us_sign * (1.0 - us_frac)
+            mid1_x = sx1 + perp_x * r1 * us_sign * (1.0 - us_frac)
+            mid1_y = sy1 + perp_y * r1 * squash * us_sign * (1.0 - us_frac)
+            edge0 = pt_r0 if us_sign < 0 else pt_l0
+            edge1 = pt_r1 if us_sign < 0 else pt_l1
+            us_c = mul_color(c, us_dark)
+            pygame.draw.polygon(surf, us_c,
+                [(int(mid0_x), int(mid0_y)),
+                 edge0, edge1, (int(mid1_x), int(mid1_y))])
+
+        # End caps: neck circle (under head) and tapered tail tip
+        if len(body_segments) >= 2:
+            _, sx0, sy0, r0, c0 = body_segments[0]
+            _, sx1, sy1, r1, _ = body_segments[1]
+            dx_n = sx0 - sx1
+            dy_n = sy0 - sy1
+            dn = math.hypot(dx_n, dy_n)
+            if dn > 0.5:
+                dx_n /= dn; dy_n /= dn
+            pygame.draw.ellipse(surf, c0,
+                                (int(sx0 - r0), int(sy0 - r0 * squash),
+                                 int(r0 * 2), int(r0 * squash * 2)))
+        if len(body_segments) >= 2:
+            _, sxn, syn, rn, cn = body_segments[-1]
+            _, sxp, syp, rp, _ = body_segments[-2]
+            dx_t = sxn - sxp
+            dy_t = syn - syp
+            dt = math.hypot(dx_t, dy_t)
+            if dt > 0.5:
+                dx_t /= dt; dy_t /= dt
+            tip_x = int(sxn + dx_t * rn * 0.8)
+            tip_y = int(syn + dy_t * rn * squash * 0.8)
+            lx = int(sxn - dy_t * rn)
+            ly = int(syn + dx_t * rn * squash)
+            rx = int(sxn + dy_t * rn)
+            ry = int(syn - dx_t * rn * squash)
+            pygame.draw.polygon(surf, cn, [(lx, ly), (rx, ry), (tip_x, tip_y)])
 
     def _draw_continuous_shadow(self, surf):
         """Draw contact shadow onto a separate transparent surface, blit once.
@@ -1894,21 +1959,23 @@ class SnakeGame:
             # Eye blink
             is_blinking = self.blink_timer <= 0.1 or (self.eat_anim['timer'] > 0 and self.eat_anim['timer'] < EAT_BULGE_DURATION - EAT_SQUASH_DURATION + 0.05)
             if not is_blinking:
-                es = max(2, int(sz * 0.075))
-                eye_spread = es * 1.6
+                es = max(2, int(sz * 0.085))
+                eye_spread = es * 1.8
                 for side in [-1, 1]:
                     ex = int(sx + perp_x * eye_spread * side + tx * sz * 0.12)
                     ey = int(bob_sy + perp_y * eye_spread * side + ty * sz * 0.12)
                     es_draw = max(1, es)
+                    # Dark outline for contrast
+                    pygame.draw.circle(surf, (8, 20, 12), (ex, ey), es_draw + 1)
                     # Sclera
                     pygame.draw.circle(surf, EYE_WHITE, (ex, ey), es_draw)
                     # Iris - slightly toward direction
-                    iris_r = max(1, es - 1)
+                    iris_r = max(1, int(es * 0.8))
                     iris_off_x = int(tx * es * 0.2 + perp_x * side * es * 0.25)
                     iris_off_y = int(ty * es * 0.2 + perp_y * side * es * 0.25)
                     pygame.draw.circle(surf, EYE_IRIS, (ex + iris_off_x, ey + iris_off_y), iris_r)
-                    # Pupil
-                    pupil_r = max(1, es - 2)
+                    # Pupil - larger for readability
+                    pupil_r = max(1, int(es * 0.55))
                     pygame.draw.circle(surf, EYE_PUPIL, (ex + iris_off_x, ey + iris_off_y), pupil_r)
                     # Reflection highlight
                     if es > 2:

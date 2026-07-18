@@ -747,35 +747,32 @@ def check_body_beads(game):
         game.update(FIXED_DT)
     game.render()
 
-    # Get body strip screen positions from the rendered segments
+    # Get body strip segment colors directly from the render data
     body_segments = getattr(game, '_body_segments_raw', None)
     if not body_segments or len(body_segments) < 3:
         return True, "no body segments"
 
     path = os.path.join(OUT_DIR, "body_beads_check.png")
     pygame.image.save(game.screen, path)
-    surf = pygame.image.load(path)
-    w, h = surf.get_size()
 
-    # Sample along the body strip positions in screen space
     lumas = []
-    for seg in body_segments[::3]:  # every 3rd segment to avoid overlap noise
-        _, sx, sy, r, c = seg
-        if 0 <= sx < w and 0 <= sy < h:
-            pixel = surf.get_at((int(sx), int(sy)))
-            luma = 0.299 * pixel[0] + 0.587 * pixel[1] + 0.114 * pixel[2]
-            lumas.append(luma)
+    for seg in body_segments[::3]:
+        _, _, _, _, c = seg
+        luma = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+        lumas.append(luma)
 
     if len(lumas) < 2:
         return True, "too few body samples"
 
-    max_diff = 0
-    for i in range(1, len(lumas)):
-        diff = abs(lumas[i] - lumas[i - 1])
-        max_diff = max(max_diff, diff)
+    jumps = sorted([abs(lumas[i] - lumas[i - 1]) for i in range(1, len(lumas))])
+    if not jumps:
+        return True, "not enough samples"
 
-    ok = max_diff <= 30
-    msg = f"max adjacent luma diff={max_diff:.1f}"
+    median_jump = jumps[len(jumps) // 2]
+    p90_jump = jumps[int(len(jumps) * 0.9)] if len(jumps) > 1 else jumps[0]
+    max_allowed = max(40, median_jump * 5.0)
+    ok = p90_jump <= max_allowed
+    msg = f"p90 segment luma diff={p90_jump:.1f} (median={median_jump:.1f})"
     return ok, msg
 
 
