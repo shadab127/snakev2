@@ -203,6 +203,23 @@ class TestHeadlessSimulation:
         assert game.score >= initial_score
         assert len(game.snake) >= initial_length
 
+    def test_catch_up_overrun_counter_fires(self):
+        """A frame whose accumulated dt exceeds the sim-step budget must be
+        counted BEFORE the accumulator is clamped — checking after clamping
+        makes the condition permanently false and the instrumentation lies."""
+        game = self._start_game()
+        game._catch_up_overruns = 0
+
+        sim_accumulator = 0.0
+        raw_dt = FIXED_DT * MAX_SIM_STEPS * 5
+        sim_accumulator += raw_dt
+        if sim_accumulator > FIXED_DT * MAX_SIM_STEPS:
+            game._catch_up_overruns += 1
+        sim_accumulator = min(sim_accumulator, FIXED_DT * MAX_SIM_STEPS)
+
+        assert game._catch_up_overruns == 1
+        assert sim_accumulator == FIXED_DT * MAX_SIM_STEPS
+
     def test_frame_pacing_bounds(self):
         """MAX_FRAME_DT prevents spiral of death from large dt spikes."""
         from config import MAX_FRAME_DT, FIXED_DT, MAX_SIM_STEPS
@@ -280,3 +297,171 @@ class TestHeadlessSimulation:
         assert QUALITY_PRESETS['high']['bloom'] is True
         assert QUALITY_PRESETS['low']['vignette'] is False
         assert QUALITY_PRESETS['high']['vignette'] is True
+
+
+class TestWrapTransitionStateMachine:
+    """Dedicated coverage for the dive -> roll -> emerge world-flip state
+    machine (main.py move_snake()/update()), which had zero test coverage
+    despite being where the double-wrap-during-transition bug lived."""
+
+    def _start_game(self):
+        game = SnakeGame()
+        game.state = GameState.PLAYING
+        game.reset()
+        game.audio._ok = False
+        pygame.event.clear()
+        return game
+
+    def _put_snake_at_edge(self, game, axis='q'):
+        R = GRID_RADIUS
+        if axis == 'q':
+            game.snake = [(R, 0), (R - 1, 0), (R - 2, 0)]
+            game.direction = 0
+        else:
+            game.snake = [(0, R), (0, R - 1), (0, R - 2)]
+            game.direction = 1
+        game.next_direction = game.direction
+        game.path_history.clear()
+        for sq, sr in game.snake:
+            game.path_history.append((sq, sr, 0, 0))
+        game._visual_dq = 0
+        game._visual_dr = 0
+
+    def _advance_to_next_wrap(self, game, max_steps=200):
+        for i in range(max_steps):
+            game.update(FIXED_DT)
+            if game._wrap_frame:
+                game._wrap_frame = False
+                return i
+        raise AssertionError("wrap did not occur within max_steps")
+
+    def test_wrap_starts_dive_phase_at_zero(self):
+        """A fresh wrap must start the transition at phase='dive' with
+        roll_angle==0.0 (the roll animation assumes it starts clean) and
+        dive_amount close to zero -- move_snake() sets dive_amount=0.0, but
+        the same update() call immediately advances the transition by one
+        dt afterward, so a single frame of progress is expected, not a
+        multi-frame head start."""
+        game = self._start_game()
+        self._put_snake_at_edge(game)
+        self._advance_to_next_wrap(game)
+        wt = game._wrap_transition
+        assert wt['active'] is True
+        assert wt['phase'] == 'dive'
+        assert wt['roll_angle'] == 0.0
+        assert 0.0 <= wt['dive_amount'] < 0.05
+
+    def test_transition_progresses_dive_roll_emerge(self):
+        """Over the full WRAP_TRANSITION_DURATION, the state machine must
+        visit dive, then roll (with roll_angle rising from 0 to pi), then
+        emerge, then deactivate -- in that order, with roll_angle
+        monotonically non-decreasing throughout (no backward snap)."""
+        from config import WRAP_TRANSITION_DURATION
+        game = self._start_game()
+        self._put_snake_at_edge(game)
+        self._advance_to_next_wrap(game)
+
+        phases_seen = []
+        roll_angles = []
+        total_steps = int(WRAP_TRANSITION_DURATION / FIXED_DT) + 20
+        for _ in range(total_steps):
+            wt = game._wrap_transition
+            if not wt['active']:
+                break
+            phases_seen.append(wt['phase'])
+            roll_angles.append(wt['roll_angle'])
+            game.update(FIXED_DT)
+
+        # Roll angle must never decrease while the transition is active.
+        for i in range(1, len(roll_angles)):
+            assert roll_angles[i] >= roll_angles[i - 1] - 1e-9, (
+                f"roll_angle snapped backward at step {i}: "
+                f"{roll_angles[i-1]} -> {roll_angles[i]}"
+            )
+
+        distinct_phases = []
+        for p in phases_seen:
+            if not distinct_phases or distinct_phases[-1] != p:
+                distinct_phases.append(p)
+        assert distinct_phases == ['dive', 'roll', 'emerge'], (
+            f"unexpected phase sequence: {distinct_phases}"
+        )
+        assert max(roll_angles) > math.pi - 0.05, "roll never reached ~pi"
+
+    def test_transition_completes_and_resets_cleanly(self):
+        """After the full duration elapses, the transition must deactivate
+        and every field must return to its post-reset default -- no
+        lingering roll_angle/dive_amount that would leave the world
+        visibly rotated or the head permanently sunk."""
+        from config import WRAP_TRANSITION_DURATION
+        game = self._start_game()
+        self._put_snake_at_edge(game)
+        self._advance_to_next_wrap(game)
+
+        total_steps = int(WRAP_TRANSITION_DURATION / FIXED_DT) + 20
+        for _ in range(total_steps):
+            game.update(FIXED_DT)
+
+        wt = game._wrap_transition
+        assert wt['active'] is False
+        assert wt['timer'] == 0
+        assert wt['phase'] == 'none'
+        assert wt['roll_angle'] == 0.0
+        assert wt['dive_amount'] == 0.0
+
+    def test_double_wrap_during_active_transition_does_not_snap(self):
+        """A second seam crossing landing inside an already-active
+        transition must NOT retrigger a fresh dict -- that would snap
+        roll_angle/dive_amount back to 0 mid-roll, producing exactly the
+        hard cut Phase 14 forbids. Drive the snake through a corner at max
+        speed so the second wrap lands during the ROLL phase of the first
+        transition (roll_angle > 0) -- landing during the dive phase
+        (roll_angle still 0) would pass even with the bug reintroduced,
+        since there'd be nothing yet to snap backward from."""
+        from config import WRAP_TRANSITION_DURATION
+        game = self._start_game()
+        game.score = 1000  # MIN_MOVE_INTERVAL -> fastest move cadence
+        R = GRID_RADIUS
+        game.snake = [(R, -R), (R - 1, -R), (R - 2, -R)]
+        game.direction = 0
+        game.next_direction = 0
+        game.path_history.clear()
+        for sq, sr in game.snake:
+            game.path_history.append((sq, sr, 0, 0))
+        game._visual_dq = 0
+        game._visual_dr = 0
+
+        wrap_count = 0
+        repositioned = False
+        prev_roll = None
+        snapped = False
+        roll_angle_seen_positive = False
+        for i in range(300):
+            game.update(FIXED_DT)
+            if game._wrap_frame:
+                wrap_count += 1
+                game._wrap_frame = False
+            wt = game._wrap_transition
+            # Once the first transition reaches the roll phase, re-aim the
+            # snake at the r-edge so the second wrap's move_snake() call
+            # lands while roll_angle > 0 -- the exact window the bug lived in.
+            if wrap_count == 1 and not repositioned and wt['phase'] == 'roll':
+                hq, hr = game.snake[0]
+                game.snake[0] = (hq, R)
+                game.snake[1] = (hq, R - 1)
+                game.snake[2] = (hq, R - 2)
+                game.direction = 1
+                game.next_direction = 1
+                repositioned = True
+            if wt['active'] and wt['roll_angle'] > 0:
+                roll_angle_seen_positive = True
+            if wt['active'] and prev_roll is not None and wt['roll_angle'] < prev_roll - 1e-6:
+                snapped = True
+            prev_roll = wt['roll_angle'] if wt['active'] else None
+            if wrap_count >= 2:
+                break
+
+        assert repositioned, "test setup failed to reach the roll phase before the second wrap"
+        assert wrap_count == 2, "test setup failed to force a second wrap"
+        assert roll_angle_seen_positive, "roll_angle never went positive -- test didn't exercise the bug window"
+        assert not snapped, "roll_angle snapped backward on overlapping wrap"

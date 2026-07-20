@@ -92,9 +92,32 @@ class TestHexMath:
     def test_all_hexes_count(self):
         from utils import in_bounds
         hexes = all_hexes()
-        assert len(hexes) == 169  # 1 + 6*(1+2+...+7) = 169 for radius 7
+        # Canonical board is the full (2R+1)x(2R+1) axial parallelogram that
+        # wrap_coords() maps onto — 15x15 = 225 for radius 7.
+        period = 2 * GRID_RADIUS + 1
+        assert len(hexes) == period * period
         for q, r in hexes:
             assert in_bounds(q, r), f"({q},{r}) should be in bounds"
+
+    def test_all_hexes_matches_wrap_domain(self):
+        """all_hexes() must equal exactly the set of wrap_coords() outputs."""
+        wrap_domain = set()
+        span = 3 * GRID_RADIUS
+        for q in range(-span, span + 1):
+            for r in range(-span, span + 1):
+                wrap_domain.add(wrap_coords(q, r))
+        assert set(all_hexes()) == wrap_domain
+
+    def test_board_closed_under_moves_and_wrap(self):
+        """Every cell's six neighbours, after wrapping, land on a board cell
+        that has terrain — the snake can never step onto a void cell."""
+        from config import DIR_VECTORS
+        board = set(all_hexes())
+        for q, r in board:
+            for dq, dr in DIR_VECTORS:
+                wq, wr = wrap_coords(q + dq, r + dr)
+                assert (wq, wr) in board, f"neighbour of ({q},{r}) escaped board"
+                assert in_bounds(wq, wr)
 
     def test_all_hexes_includes_origin(self):
         hexes = all_hexes()
@@ -129,7 +152,11 @@ class TestHexMath:
         assert in_bounds(-GRID_RADIUS - 1, 0) is False
 
     def test_in_bounds_axial_corner(self):
-        assert in_bounds(GRID_RADIUS, GRID_RADIUS) is False  # |q+r| > radius
+        # Parallelogram board: the (R, R) corner IS a valid, reachable cell.
+        assert in_bounds(GRID_RADIUS, GRID_RADIUS) is True
+        # Just outside the parallelogram is rejected.
+        assert in_bounds(GRID_RADIUS + 1, GRID_RADIUS) is False
+        assert in_bounds(GRID_RADIUS, GRID_RADIUS + 1) is False
 
     def test_canonical_cell_basic(self):
         from utils import canonical_cell

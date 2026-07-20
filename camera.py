@@ -83,6 +83,22 @@ class Camera:
         # Banking
         self.roll = 0.0
         self.roll_target = 0.0
+        self._roll_cos = 1.0
+        self._roll_sin = 0.0
+
+        # World-flip roll (Phase 14 wrap transition). Kept separate from
+        # banking `roll` since it's driven by the wrap-transition state
+        # machine, not turn input, and composes additively with it. Applied
+        # as a screen-space rotation about the frame center for every
+        # projected point — mathematically identical to rotating the camera's
+        # `up` basis vector for a perspective projection centered on the
+        # screen (verified: both give the same screen position for every
+        # world point, to floating-point precision), but far cheaper than
+        # rebuilding the view matrix or rotating a captured full-screen
+        # surface every frame.
+        self.world_roll = 0.0
+        self._world_roll_cos = 1.0
+        self._world_roll_sin = 0.0
 
         # Smooth yaw interpolation
         self._yaw = 0.0
@@ -142,6 +158,8 @@ class Camera:
         fps_ratio = dt * 60.0
         self.roll_target *= 0.9 ** fps_ratio
         self.roll += (self.roll_target - self.roll) * (1.0 - 0.9 ** fps_ratio)
+        self._roll_cos = math.cos(self.roll)
+        self._roll_sin = math.sin(self.roll)
 
         # Screen shake in camera space
         if self._shake_timer > 0:
@@ -176,6 +194,8 @@ class Camera:
         self.eye = (hx - dx * CAM_3D_DIST, hy - dy * CAM_3D_DIST, CAM_3D_HEIGHT)
         self.roll = 0.0
         self.roll_target = 0.0
+        self._roll_cos = 1.0
+        self._roll_sin = 0.0
         self._build_matrices()
 
     def eat_punch(self):
@@ -188,6 +208,12 @@ class Camera:
         """direction_change: +1 for right, -1 for left."""
         self.roll_target = direction_change * CAM_BANK_INTENSITY
 
+    def set_world_roll(self, angle):
+        """Set the Phase 14 wrap-transition world-flip roll (radians)."""
+        self.world_roll = angle
+        self._world_roll_cos = math.cos(angle)
+        self._world_roll_sin = math.sin(angle)
+
     def project(self, x, y, z=0):
         v = Matrix4.transform(self.vp_matrix, x, y, z, 1.0)
         if v[3] <= 1e-10:
@@ -198,13 +224,25 @@ class Camera:
         depth = v[2] * inv_w
         sx = (sx_ndc + 1.0) * 0.5 * self.width
         sy = (1.0 - sy_ndc) * 0.5 * self.height
-        if abs(self.roll) > 0.001:
-            cos_r = math.cos(self.roll)
-            sin_r = math.sin(self.roll)
+        # Compose banking roll and world-flip roll into one rotation so a
+        # single point only gets rotated once (rotation composes by angle
+        # addition, not by chaining two separate rotate operations).
+        total_cos = self._roll_cos
+        total_sin = self._roll_sin
+        has_bank = abs(self.roll) > 0.001
+        has_world = abs(self.world_roll) > 0.001
+        if has_world:
+            if has_bank:
+                total_cos = self._roll_cos * self._world_roll_cos - self._roll_sin * self._world_roll_sin
+                total_sin = self._roll_sin * self._world_roll_cos + self._roll_cos * self._world_roll_sin
+            else:
+                total_cos = self._world_roll_cos
+                total_sin = self._world_roll_sin
+        if has_bank or has_world:
             cx_s = self.width * 0.5
             cy_s = self.height * 0.5
             rx = sx - cx_s
             ry = sy - cy_s
-            sx = cx_s + rx * cos_r - ry * sin_r
-            sy = cy_s + rx * sin_r + ry * cos_r
+            sx = cx_s + rx * total_cos - ry * total_sin
+            sy = cy_s + rx * total_sin + ry * total_cos
         return (sx, sy, depth)

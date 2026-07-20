@@ -4,6 +4,16 @@ from config import *
 from game_state import GameState
 from utils import hex_to_pixel, all_hexes
 
+_variable_font_cache = {}
+
+
+def _font_at_size(size):
+    font = _variable_font_cache.get(size)
+    if font is None:
+        font = pygame.font.Font(FONT_NAME, size)
+        _variable_font_cache[size] = font
+    return font
+
 
 def _draw_text_with_shadow(surf, font, text, color, rect, shadow_alpha=0, shadow_offset=1):
     txt = font.render(text, True, color)
@@ -73,7 +83,7 @@ def draw_ui(surf, shake_x, shake_y, game):
         pop_scale = 1.0 + 0.35 * math.sin(t * math.pi)
         pop_scale = max(1.0, pop_scale)
     score_sz = int(30 * pop_scale)
-    score_font = pygame.font.Font(FONT_NAME, score_sz)
+    score_font = _font_at_size(score_sz)
     text_surf = score_font.render(score_text, True, TEXT_WHITE)
     score_glow = score_font.render(score_text, True, (40, 180, 120, 60))
     off = int(2 * pop_scale)
@@ -169,7 +179,7 @@ def draw_game_over(surf, game, menu_selection, score_count_up, new_record_bounce
         bounce_t = 1.0 - new_record_bounce_timer / 1.5
         bounce_scale = 1.0 + 0.3 * abs(math.sin(bounce_t * math.pi * 2))
         bounce_sz = int(22 * bounce_scale)
-        bounce_font = pygame.font.Font(FONT_NAME, bounce_sz)
+        bounce_font = _font_at_size(bounce_sz)
         best = bounce_font.render("NEW RECORD!", True, TEXT_YELLOW)
         bg = bounce_font.render("NEW RECORD!", True, (180, 150, 50, 60))
         bx = WIDTH // 2
@@ -316,7 +326,7 @@ def draw_minimap(surf, snake, apple, game):
 
     # Center on snake head and rotate to match camera view direction
     head = snake[0] if snake else (0, 0)
-    hx, hy = hex_to_pixel(*head)
+    head_q, head_r = head
     yaw = game.camera._yaw
     rot = -(yaw + math.pi / 2)
     cos_r = math.cos(rot)
@@ -324,10 +334,15 @@ def draw_minimap(surf, snake, apple, game):
 
     snake_set = set(snake) if snake else set()
 
+    period = 2 * GRID_RADIUS + 1
     for q, r in hexes:
-        px, py = hex_to_pixel(q, r)
-        rx = px - hx
-        ry = py - hy
+        # Wrap the axial delta to its shortest toroidal representative so
+        # cells more than half a board away render at their near-side wrapped
+        # position instead of their raw (unwrapped) far-side distance —
+        # otherwise the minimap misrepresents adjacency near seams.
+        dq = ((q - head_q + GRID_RADIUS) % period) - GRID_RADIUS
+        dr = ((r - head_r + GRID_RADIUS) % period) - GRID_RADIUS
+        rx, ry = hex_to_pixel(dq, dr)
         dx = (rx * cos_r - ry * sin_r) * scale + size / 2
         dy = (rx * sin_r + ry * cos_r) * scale + size / 2
         if (q, r) == apple:
@@ -427,9 +442,11 @@ def draw_debug_overlay(surf, game):
     overruns = getattr(game, '_catch_up_overruns', 0)
     renderer = getattr(game, 'renderer_name', '?')
     quality = getattr(game, 'quality_level', '?')
+    vsync_active = getattr(game, '_vsync_active', False)
     lines = [
         f"FPS: {fps:.1f}  smooth: {smooth_fps:.1f}  #{getattr(game, '_frame_count', 0)}",
         f"Renderer: {renderer}  Quality: {quality}",
+        f"Resolution: {WIDTH}x{HEIGHT}  Vsync: {'on' if vsync_active else 'off'}",
         f"Overruns: {overruns}",
         f"--- Pipeline (ms) ---",
         f"Events:      {timings.get('events', 0):6.2f}",
@@ -449,8 +466,8 @@ def draw_debug_overlay(surf, game):
         f"Frame total: {timings.get('frame', 0):6.2f}",
         f"--- Window ({len(game._frame_times)} frames) ---",
         f"Avg: {stats.get('avg', 0):5.1f}  Min: {stats.get('min', 0):5.1f}",
-        f"Max: {stats.get('max', 0):5.1f}  P95: {stats.get('p95', 0):5.1f}",
-        f"P99: {stats.get('p99', 0):5.1f}",
+        f"Max: {stats.get('max', 0):5.1f}  P50: {stats.get('p50', 0):5.1f}",
+        f"P95: {stats.get('p95', 0):5.1f}  P99: {stats.get('p99', 0):5.1f}",
     ]
 
     panel_w = 280

@@ -15,7 +15,7 @@ _tile_noise_cache = {}
 
 
 def perlin_noise(x, y, scale=1.0, octaves=3, persistence=0.5):
-    key = (int(x * 100), int(y * 100), scale, octaves)
+    key = (int(x * 100), int(y * 100), scale, octaves, persistence)
     if key in _perlin_cache:
         return _perlin_cache[key]
 
@@ -118,7 +118,10 @@ def hex_corners(cx, cy):
 
 
 def in_bounds(q, r):
-    return max(abs(q), abs(r), abs(q + r)) <= GRID_RADIUS
+    # Canonical board is the 15x15 axial parallelogram that wrap_coords() maps
+    # onto: every reachable cell has terrain, so the snake can never step onto a
+    # cell without a tile. This must match wrap_coords()/all_hexes() exactly.
+    return -GRID_RADIUS <= q <= GRID_RADIUS and -GRID_RADIUS <= r <= GRID_RADIUS
 
 
 def wrap_coords(q, r):
@@ -141,18 +144,39 @@ def canonical_cell(q, r):
     return wq, wr, dq, dr
 
 
+def nearest_period_offset(cx, cy, ref_x, ref_y):
+    """Return the world-space (dx, dy) whole-period shift that places world
+    point (cx, cy) closest to (ref_x, ref_y) under the toroidal board's
+    periodic tiling. Used to pick the correct periodic copy of a canonical
+    tile/entity for a perspective camera — a flat screen-space pixel shift is
+    NOT valid here (the camera is perspective, so the screen-space delta for a
+    one-period world shift varies across the frame; only a true world-space
+    re-projection through the real camera is correct)."""
+    period = 2 * GRID_RADIUS + 1
+    qx, qy = hex_to_pixel(period, 0)
+    rx, ry = hex_to_pixel(0, period)
+    # Solve the 2x2 linear system [qx rx; qy ry] @ [kq; kr] = [vx; vy]
+    vx = ref_x - cx
+    vy = ref_y - cy
+    det = qx * ry - rx * qy
+    if abs(det) < 1e-9:
+        return 0.0, 0.0
+    kq = round((vx * ry - rx * vy) / det)
+    kr = round((qx * vy - vx * qy) / det)
+    return kq * qx + kr * rx, kq * qy + kr * ry
+
+
 _all_hexes_cache = None
 
 def all_hexes():
     global _all_hexes_cache
     if _all_hexes_cache is None:
         R = GRID_RADIUS
-        _all_hexes_cache = []
-        for r in range(-R, R + 1):
-            q_min = max(-R, -R - r)
-            q_max = min(R, R - r)
-            for q in range(q_min, q_max + 1):
-                _all_hexes_cache.append((q, r))
+        # Full axial parallelogram (period x period) — the canonical toroidal
+        # board. wrap_coords() maps every coordinate into exactly this set.
+        _all_hexes_cache = [(q, r)
+                            for r in range(-R, R + 1)
+                            for q in range(-R, R + 1)]
     return _all_hexes_cache
 
 
@@ -187,7 +211,10 @@ def compute_tile_ao(q, r, snake_set):
             nq, nr = wrap_coords(nq, nr)
         if (nq, nr) in snake_set:
             neighbor_count += 1
-    edge_dist = min(1.0, max(abs(q), abs(r), abs(q + r)) / R)
+    # Distance to the nearest board edge for the Phase 11 axial parallelogram
+    # (-R..R on both q and r independently) — NOT the old hexagon formula
+    # max(|q|,|r|,|q+r|)/R, which described the pre-Phase-11 board shape.
+    edge_dist = min(1.0, max(abs(q), abs(r)) / R)
     c_noise = tile_noise(q, r)
     height_var = abs(c_noise.get('detail', 0)) * 0.15
     base_ao = 1.0 - 0.04 * neighbor_count - 0.12 * edge_dist - height_var * 0.2

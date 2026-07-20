@@ -18,7 +18,7 @@ from utils import (hex_side_normal, hex_to_pixel,
                    wrap_coords, canonical_cell, compute_sun_light,
                    compute_sky_color, sample_spline_path,
                    hex_corner_height, hex_inner_corners,
-                   rgb_to_hsv, hsv_to_rgb)
+                   rgb_to_hsv, hsv_to_rgb, nearest_period_offset)
 from particle import Particle, ParticlePool
 from resources import ResourceManager
 from gl_renderer import GLRenderer
@@ -76,10 +76,18 @@ class SnakeGame:
         flags = pygame.SCALED | pygame.RESIZABLE
         if _CLI_ARGS.get('fullscreen'):
             flags |= pygame.FULLSCREEN
+        # Exactly one pacing authority should be active: display vsync when it
+        # actually engages, otherwise the clock.tick(RENDER_FPS) software cap
+        # in run(). set_mode(vsync=1) can silently fail to engage (driver
+        # doesn't support it) even when it doesn't raise, so this is a
+        # best-effort request flag, not a guarantee — but it's the only signal
+        # pygame exposes short of querying the platform swap interval.
+        self._vsync_active = False
         try:
             if VSYNC_ENABLED:
                 try:
                     self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags, vsync=1)
+                    self._vsync_active = True
                 except pygame.error:
                     self.screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
             else:
@@ -114,11 +122,11 @@ class SnakeGame:
         self._full_redraw_requested = True
         self._debug_overlay = False
         self._perf_timings = {}
-        self._frame_times = []
+        self._frame_times = deque(maxlen=FRAME_TIME_WINDOW)
         self._frame_count = 0
         self._wall_time = 0.0
         self._frame_timings = {}
-        self._frame_stats = {'avg': 0.0, 'min': 0.0, 'max': 0.0, 'p95': 0.0, 'p99': 0.0}
+        self._frame_stats = {'avg': 0.0, 'min': 0.0, 'max': 0.0, 'p50': 0.0, 'p95': 0.0, 'p99': 0.0}
         self._stats_dirty = True
 
         self.water_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
@@ -152,6 +160,7 @@ class SnakeGame:
         self.grade_cool_shift = 0.0
         self.grade_death_darken = 0.0
         self.grade_overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        self._fade_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
         self.birds = []
         for _ in range(AMBIENT_BIRD_COUNT):
@@ -365,14 +374,16 @@ class SnakeGame:
             self._tile_cache.blit(surf, (0, 0))
             time_float = self.render_time
             tile_cache = self._tile_static_cache
+            eye_x, eye_y = self.camera.eye[0], self.camera.eye[1]
             for q, r in self._all_hexes_cache:
                 cx, cy = tile_cache[(q, r)]['center_world']
-                sx, sy, depth = self.camera.project(cx, cy, 0)
+                offset = nearest_period_offset(cx, cy, eye_x, eye_y)
+                sx, sy, depth = self.camera.project(cx + offset[0], cy + offset[1], 0)
                 if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
                     continue
                 if sy < -TILE_CLIP_MARGIN or sy > HEIGHT + TILE_CLIP_MARGIN:
                     continue
-                self._draw_tile_decorations(self._tile_cache, q, r, time_float)
+                self._draw_tile_decorations(self._tile_cache, q, r, time_float, offset=offset)
             self._tile_cache_valid = True
             self._full_redraw_requested = False
             return
@@ -402,21 +413,25 @@ class SnakeGame:
         tile_items = []
         for q, r in dirty_set:
             cx_t, cy_t = tile_cache[(q, r)]['center_world']
-            sx, sy, depth = self.camera.project(cx_t, cy_t, 0)
+            offset = nearest_period_offset(cx_t, cy_t, cx, cy)
+            sx, sy, depth = self.camera.project(cx_t + offset[0], cy_t + offset[1], 0)
             if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
                 continue
             if sy < -TILE_CLIP_MARGIN or sy > HEIGHT + TILE_CLIP_MARGIN:
                 continue
-            tile_items.append((depth, q, r))
+            tile_items.append((depth, q, r, offset))
         tile_items.sort(key=lambda x: x[0], reverse=True)
-        for _, q, r in tile_items:
-            self.draw_tile(self._tile_cache, q, r, time_float)
+        for _, q, r, offset in tile_items:
+            self.draw_tile(self._tile_cache, q, r, time_float, offset=offset)
         self._tile_cache_valid = True
 
-    def _draw_tile_decorations(self, surf, q, r, time_float):
+    def _draw_tile_decorations(self, surf, q, r, time_float, offset=(0.0, 0.0)):
         static = self._tile_static_cache[(q, r)]
         corners_world = static['corners_world']
         cx, cy = static['center_world']
+        off_x, off_y = offset
+        cx += off_x
+        cy += off_y
         base_top_color_tuple = static['base_top_color']
         tex_variation = static['tex_variation']
         dist_factor = static['dist_factor']
@@ -456,7 +471,7 @@ class SnakeGame:
         inner_top_pts = []
         for i, (c_x, c_y) in enumerate(corners_world):
             z_top = corner_heights[i]
-            sx_t, sy_t, _ = self.camera.project(c_x, c_y, z_top)
+            sx_t, sy_t, _ = self.camera.project(c_x + off_x, c_y + off_y, z_top)
             top_pts.append((sx_t, sy_t))
         for i, (ix, iy) in enumerate(inner_corners):
             z_top = corner_heights[i]
@@ -563,10 +578,10 @@ class SnakeGame:
                     gc = mul_color(gc, 0.85)
 
                 sway = math.sin(time_float * 1.8 + bx * 0.4 + by * 0.3) * 2
-                sx_b, sy_b, _ = self.camera.project(bx, by, 0)
+                sx_b, sy_b, _ = self.camera.project(bx + off_x, by + off_y, 0)
                 if sx_b == -999:
                     continue
-                sx_t, sy_t, _ = self.camera.project(bx + sway, by, blade_h)
+                sx_t, sy_t, _ = self.camera.project(bx + sway + off_x, by + off_y, blade_h)
                 if sx_t == -999:
                     continue
                 pygame.draw.line(surf, gc, (int(sx_b), int(sy_b)), (int(sx_t), int(sy_t)), blade_w)
@@ -703,11 +718,6 @@ class SnakeGame:
         dq, dr = DIR_VECTORS[self.direction]
         return (q + dq, r + dr)
 
-    def _visual_head_pos(self):
-        if self.path_history:
-            return self.path_history[0][:2]
-        return self.snake[0]
-
     def _next_head_unwrapped(self):
         q, r = self.snake[0]
         dq, dr = DIR_VECTORS[self.direction]
@@ -741,12 +751,20 @@ class SnakeGame:
             self._visual_dq += dq_add
             self._visual_dr += dr_add
             self._wrap_frame = True
-            self._wrap_transition = {'active': True,
-                                     'timer': WRAP_TRANSITION_DURATION,
-                                     'duration': WRAP_TRANSITION_DURATION,
-                                     'phase': 'dive',
-                                     'roll_angle': 0.0,
-                                     'dive_amount': 0.0}
+            # A second seam crossing can land inside an already-active transition
+            # (e.g. a q-wrap then r-wrap near a corner at high speed — two seam
+            # crossings fit easily inside WRAP_TRANSITION_DURATION at max speed).
+            # Retriggering a fresh dict here would snap roll_angle/dive_amount
+            # back to 0 mid-roll — exactly the hard cut Phase 14 forbids. The
+            # in-flight transition already covers "hide the seam", so let it keep
+            # running untouched; only start a new one if none is active.
+            if not self._wrap_transition['active']:
+                self._wrap_transition = {'active': True,
+                                         'timer': WRAP_TRANSITION_DURATION,
+                                         'duration': WRAP_TRANSITION_DURATION,
+                                         'phase': 'dive',
+                                         'roll_angle': 0.0,
+                                         'dive_amount': 0.0}
 
         vis_dq = self._visual_dq
         vis_dr = self._visual_dr
@@ -1274,10 +1292,13 @@ class SnakeGame:
             if self.new_record_bounce_timer > 0:
                 self.new_record_bounce_timer = max(0, self.new_record_bounce_timer - dt)
 
-    def draw_tile(self, surf, q, r, time_float):
+    def draw_tile(self, surf, q, r, time_float, offset=(0.0, 0.0)):
         static = self._tile_static_cache[(q, r)]
         corners_world = static['corners_world']
         cx, cy = static['center_world']
+        off_x, off_y = offset
+        cx += off_x
+        cy += off_y
         base_top_color_tuple = static['base_top_color']
         base_side_color_tuple = static['base_side_color']
         tex_variation = static['tex_variation']
@@ -1322,8 +1343,8 @@ class SnakeGame:
         for i, (c_x, c_y) in enumerate(corners_world):
             z_top = corner_heights[i]
             z_bot = corner_heights[i] - TILE_HEIGHT
-            sx_t, sy_t, _ = self.camera.project(c_x, c_y, z_top)
-            sx_b, sy_b, _ = self.camera.project(c_x, c_y, z_bot)
+            sx_t, sy_t, _ = self.camera.project(c_x + off_x, c_y + off_y, z_top)
+            sx_b, sy_b, _ = self.camera.project(c_x + off_x, c_y + off_y, z_bot)
             top_pts.append((sx_t, sy_t))
             bot_pts.append((sx_b, sy_b))
         for i, (ix, iy) in enumerate(inner_corners):
@@ -1447,7 +1468,11 @@ class SnakeGame:
             side_light *= side_ao
 
             side_noise_val = noise.get('detail', 0) * 0.08
-            side_light = max(0.1, side_light + side_noise_val)
+            # Floor kept high enough that even distant corner rims never read as
+            # pure black (which looks like a hole in the board). The parallelogram
+            # board's corners are far enough that dist_factor drives side_light
+            # very low, so this floor matters at the rim.
+            side_light = max(0.18, side_light + side_noise_val)
 
             sc_top = mul_color(tuple(base_side_color), side_light * 1.1)
             if depth_fade > 0:
@@ -1504,10 +1529,10 @@ class SnakeGame:
                     blade_h *= 0.3
                     gc = mul_color(gc, 0.85)
 
-                sx_b, sy_b, _ = self.camera.project(bx, by, 0)
+                sx_b, sy_b, _ = self.camera.project(bx + off_x, by + off_y, 0)
                 if sx_b == -999:
                     continue
-                sx_t, sy_t, _ = self.camera.project(bx + sway, by, blade_h)
+                sx_t, sy_t, _ = self.camera.project(bx + sway + off_x, by + off_y, blade_h)
                 if sx_t == -999:
                     continue
                 pygame.draw.line(surf, gc, (int(sx_b), int(sy_b)), (int(sx_t), int(sy_t)), blade_w)
@@ -1563,9 +1588,17 @@ class SnakeGame:
         return result_high
 
     def _compute_body_segments(self, time_float):
-        """Compute body tube segments. Returns list of (depth, sx, sy, r, c)."""
+        """Compute body tube segments.
+
+        Returns (segments, submerged_start) where segments is a list of
+        (depth, sx, sy, r, c) in head-to-tail order (unchanged shape — the
+        checker reads this via _body_segments_raw), and submerged_start is
+        the index in that list from which segments are "submerged" — past
+        the wrap-transition seam and meant to be physically occluded by
+        terrain rather than just tinted. submerged_start == len(segments)
+        when no transition is active (nothing submerged)."""
         if not hasattr(self, '_render_spline_positions') or not self._render_spline_positions:
-            return []
+            return [], 0
 
         positions = self._render_spline_positions
         n_pts = len(positions)
@@ -1576,6 +1609,7 @@ class SnakeGame:
             idle_sway = math.sin(time_float * 1.5) * 0.3
 
         segments = []
+        submerged_start = None
         consecutive_offscreen = 0
         margin = SNAKE_RENDER_CULL_MARGIN
         for i in range(n_pts):
@@ -1680,11 +1714,18 @@ class SnakeGame:
                 warm_glow = (255, 200, 100)
                 c = add_color(c, mul_color(warm_glow, eat_glow))
 
-            # Wrap transition fade: body near seam fades during dive/emerge
+            # Wrap transition: body past the seam is "submerged" — presented
+            # as behind terrain (drawn in the under-seam pass, before the
+            # terrain occluder) rather than merely tinted. Still apply a
+            # fade for the segments right at the boundary so the seam edge
+            # isn't a hard cut even though the terrain occluder now does the
+            # actual hiding.
+            is_submerged = False
             if self._wrap_transition['active']:
                 wt = self._wrap_transition
                 seam_t = 0.95 - 0.2 * wt['dive_amount']
                 if t > seam_t:
+                    is_submerged = True
                     seam_fade = 1.0 - min(1.0, (t - seam_t) / 0.1)
                     c = mul_color(c, max(0.3, seam_fade))
 
@@ -1702,12 +1743,21 @@ class SnakeGame:
                 c = mul_color(c, fade)
 
             r = max(1, int(w * move_pulse))
+            if is_submerged and submerged_start is None:
+                submerged_start = len(segments)
             segments.append((depth, int(sx), int(sy), r, c))
 
-        return segments
+        if submerged_start is None:
+            submerged_start = len(segments)
+        return segments, submerged_start
 
-    def _draw_body_strip(self, surf, body_segments):
-        """Draw body as a continuous filled polygon strip (tube, not spheres)."""
+    def _draw_body_strip(self, surf, body_segments, draw_head_cap=True, draw_tail_cap=True):
+        """Draw body as a continuous filled polygon strip (tube, not spheres).
+
+        draw_head_cap/draw_tail_cap control the neck/tail end caps — set to
+        False when body_segments is a partial slice (e.g. the emerged half
+        of a wrap-transition split) whose cut boundary isn't the snake's
+        real head or tail, so no cap belongs there."""
         if len(body_segments) < 2:
             return
         squash = BODY_SQUASH
@@ -1808,7 +1858,7 @@ class SnakeGame:
                  edge0, edge1, (int(mid1_x), int(mid1_y))])
 
         # End caps: neck circle (under head) and tapered tail tip
-        if len(body_segments) >= 2:
+        if draw_head_cap and len(body_segments) >= 2:
             _, sx0, sy0, r0, c0 = body_segments[0]
             _, sx1, sy1, r1, _ = body_segments[1]
             dx_n = sx0 - sx1
@@ -1819,7 +1869,7 @@ class SnakeGame:
             pygame.draw.ellipse(surf, c0,
                                 (int(sx0 - r0), int(sy0 - r0 * squash),
                                  int(r0 * 2), int(r0 * squash * 2)))
-        if len(body_segments) >= 2:
+        if draw_tail_cap and len(body_segments) >= 2:
             _, sxn, syn, rn, cn = body_segments[-1]
             _, sxp, syp, rp, _ = body_segments[-2]
             dx_t = sxn - sxp
@@ -1848,11 +1898,23 @@ class SnakeGame:
 
         factor = 1.0 / light_dir[2]
 
+        # Wrap transition: match _compute_body_segments' submerged boundary
+        # so no orphaned shadow patch is left floating above a body sample
+        # that's already been hidden behind the terrain occluder.
+        wt_active = self._wrap_transition['active']
+        seam_t = 1.0
+        if wt_active:
+            seam_t = 0.95 - 0.2 * self._wrap_transition['dive_amount']
+
         proj_left = []
         proj_right = []
         consec_off = 0
         for i, (wx, wy, tx, ty) in enumerate(positions):
             t = i / max(1, n - 1)
+            if wt_active and t > seam_t:
+                proj_left.append(None)
+                proj_right.append(None)
+                continue
             thickness = 1.0 - (t ** 1.8) * 0.65
             thickness += 0.04 * math.sin(t * math.pi * 1.5)
             w = (HEX_SIZE * SNAKE_SEGMENT_SCALE * 0.5) * thickness * 1.3
@@ -1931,6 +1993,18 @@ class SnakeGame:
         shadow_surf.set_alpha(shadow_alpha)
         surf.blit(shadow_surf, (offset_x, offset_y))
 
+    def _head_is_hidden(self):
+        """True at the midpoint of an active world roll (roll_angle near
+        pi/2, the instant the world is edge-on to the camera). Shared by
+        draw_snake_segment's head sprite/eyes AND _draw_body_strip's neck
+        cap — both draw a head-colored blob at the same screen position, so
+        both must suppress it together or the neck cap alone still reads as
+        a visible (eyeless) head floating through the flip."""
+        if not self._wrap_transition['active'] or self._wrap_transition['phase'] != 'roll':
+            return False
+        roll_dist = abs(self._wrap_transition['roll_angle'] - math.pi / 2)
+        return roll_dist < WRAP_HEAD_HIDE_WINDOW
+
     def draw_snake_segment(self, surf, idx, q, r, time_float):
         if not hasattr(self, '_spline_positions') or not self._spline_positions:
             return
@@ -1975,6 +2049,12 @@ class SnakeGame:
         head_z = 0
         if idx == 0 and self._wrap_transition['active']:
             head_z -= self._wrap_transition['dive_amount'] * WRAP_DIVE_DEPTH
+            # Hide the head at the midpoint of the world roll: that's the
+            # instant the world is edge-on to the camera, where the head
+            # would otherwise pop from the outgoing side straight to the
+            # incoming side with no transition of its own.
+            if idx == 0 and self._head_is_hidden():
+                return
         if idx == 0 and self.eat_anim['timer'] > EAT_BULGE_DURATION - EAT_SQUASH_DURATION:
             eat_t = 1.0 - (self.eat_anim['timer'] - (EAT_BULGE_DURATION - EAT_SQUASH_DURATION)) / EAT_SQUASH_DURATION
             if 0 <= eat_t <= 1:
@@ -2252,6 +2332,18 @@ class SnakeGame:
                 qh, rh = self.snake[0]
                 hx_cam, hy_cam = hex_to_pixel(qh, rh)
             self.camera.follow_snake(hx_cam, hy_cam, self.direction, 1.0 / max(RENDER_FPS, 1), self._speed_ratio)
+
+        # Wrap transition world flip: composed into the camera basis (an
+        # orthonormal rotation of the projected point around the frame
+        # center, equivalent to rotating Camera.up around the view forward
+        # axis — see Camera.project()) rather than rotating a captured
+        # full-screen surface every animated frame. Sign matches "world
+        # rotates clockwise on screen as roll_angle increases", same visual
+        # direction the old pygame.transform.rotate(surf, -degrees) produced.
+        if self._wrap_transition['active']:
+            self.camera.set_world_roll(-self._wrap_transition['roll_angle'])
+        elif self.camera.world_roll != 0.0:
+            self.camera.set_world_roll(0.0)
         surf = self.screen
         time_float = self.render_time
 
@@ -2365,7 +2457,12 @@ class SnakeGame:
             for ry in range(0, int(sun_ref_h), 2):
                 alpha = int(40 * (1 - ry / sun_ref_h) * (0.5 + 0.5 * math.sin(time_float * 2 + ry * 0.1)))
                 if alpha > 0:
-                    self._water_reflect_surf.fill((*sun_color, alpha), rect=(0, ry, 100, 2))
+                    # BLEND_ADD ignores per-pixel alpha, so premultiply the sun
+                    # color by the intended intensity — otherwise every lit row
+                    # adds full sun_color and saturates to white blocks.
+                    a = alpha / 255.0
+                    add_c = (int(sun_color[0] * a), int(sun_color[1] * a), int(sun_color[2] * a), 255)
+                    self._water_reflect_surf.fill(add_c, rect=(0, ry, 100, 2))
             surf.blit(self._water_reflect_surf, (sun_ref_x - 50, sun_ref_y_start), special_flags=pygame.BLEND_ADD)
 
         if not hasattr(self, '_reflect_cache'):
@@ -2386,6 +2483,24 @@ class SnakeGame:
         surf.blit(self.water_surf, (0, 0))
         self._perf_timings['water'] = (time.perf_counter() - _t_water) * 1000
 
+        # Body positions and segments are needed before the terrain occluder
+        # pass now (Phase 15: submerged segments must be drawn UNDER the
+        # terrain, not just depth-sorted against it), so compute them here,
+        # ahead of _build_tile_cache().
+        if len(self.path_history) >= 2:
+            interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
+            lerp_t = min(1.0, self.move_timer / interval) if interval > 0 else 1.0
+            # Render sampling (high res), from the already-computed low-res
+            # self._spline_positions (set earlier in render())
+            self._render_spline_positions = self._subsample_spline_positions(lerp_t)
+        else:
+            self._render_spline_positions = None
+
+        body_segments, submerged_start = self._compute_body_segments(time_float)
+        self._body_segments_raw = body_segments
+        emerged_segments = body_segments[:submerged_start + 1]
+        submerged_segments = body_segments[submerged_start:]
+
         _t_ground = time.perf_counter()
         self._build_ground()
         surf.blit(self.ground_cache, (shake_x, shake_y))
@@ -2393,39 +2508,37 @@ class SnakeGame:
         self._perf_timings['tiles'] = (time.perf_counter() - _t_ground) * 1000
 
         _t_composite = time.perf_counter()
-        period = 2 * GRID_RADIUS + 1
-        q_px, q_py = hex_to_pixel(period, 0)
-        r_px, r_py = hex_to_pixel(0, period)
-        vdq = self._visual_dq
-        vdr = self._visual_dr
-        tile_shift_x = -int(vdq * q_px + vdr * r_px)
-        tile_shift_y = -int(vdq * q_py + vdr * r_py)
         self.draw_cache.fill((0, 0, 0, 0))
-        self.draw_cache.blit(self._tile_cache, (0, 0))
-        if tile_shift_x != 0 or tile_shift_y != 0:
-            self.draw_cache.blit(self._tile_cache, (tile_shift_x, tile_shift_y))
 
-        # Continuous body shadow (under depth-sorted items)
+        # Under-seam pass: submerged tail segments drawn on a still-empty
+        # (transparent) cache, so nothing occludes them yet.
+        if len(submerged_segments) >= 2:
+            self._draw_body_strip(self.draw_cache, submerged_segments,
+                                   draw_head_cap=False, draw_tail_cap=True)
+
+        # Seam / tile occluder pass: the tile cache is built with each tile's
+        # nearest periodic copy already re-projected through the real
+        # (perspective) camera — see _build_tile_cache(). A flat screen-space
+        # blit shift is not valid for a perspective camera (the screen-space
+        # delta for a one-period world shift is not constant across the
+        # frame), so no further shift is needed here. Blitting it now paints
+        # over whatever of the submerged pass falls under opaque terrain —
+        # that's the actual occlusion, not a color fade standing in for it.
+        self.draw_cache.blit(self._tile_cache, (0, 0))
+
+        # Shadow only covers emerged samples (see _draw_continuous_shadow's
+        # seam_t check) so no shadow patch is left orphaned above hidden body.
         self._draw_continuous_shadow(self.draw_cache)
         self._perf_timings['shadow'] = (time.perf_counter() - _t_composite) * 1000
 
+        # Above-world pass: apple, emerged body, and snake heads/eyes on top
+        # of the now-opaque terrain, depth-sorted against each other as before.
         _t0 = time.perf_counter()
         draw_items = []
         if self.apple:
             ax, ay = hex_to_pixel(*self.apple)
             _, _, depth = self.camera.project(ax, ay, 0.5)
             draw_items.append((depth, 'apple'))
-        
-        if len(self.path_history) >= 2:
-            # Use same trimmed+interpolated position as first spline block (do NOT overwrite)
-            trimmed = list(self.path_history)[:len(self.snake)]
-            extended = [self.next_head_pos()] + trimmed
-            interval = max(MIN_MOVE_INTERVAL, BASE_MOVE_INTERVAL - self.score * SPEED_DECAY_PER_POINT)
-            lerp_t = min(1.0, self.move_timer / interval) if interval > 0 else 1.0
-            # Render sampling (high res)
-            self._render_spline_positions = self._subsample_spline_positions(lerp_t)
-        else:
-            self._render_spline_positions = None
 
         for idx, (q, r) in enumerate(self.snake):
             if self._spline_positions and idx < len(self._spline_positions):
@@ -2434,22 +2547,24 @@ class SnakeGame:
                 cx, cy = hex_to_pixel(q, r)
             _, _, depth = self.camera.project(cx, cy, 0)
             draw_items.append((depth, 'snake', idx, q, r))
-        
-        # Body strip: draw as continuous polygon tube at median depth
-        body_segments = self._compute_body_segments(time_float)
-        self._body_segments_raw = body_segments
-        if body_segments:
-            med_depth = sorted(s[0] for s in body_segments)[len(body_segments) // 2]
-            draw_items.append((med_depth, 'body_strip', body_segments))
+
+        if emerged_segments:
+            med_depth = sorted(s[0] for s in emerged_segments)[len(emerged_segments) // 2]
+            draw_items.append((med_depth, 'body_strip', emerged_segments))
 
         draw_list = self._build_depth_buckets(draw_items)
+        head_hidden = self._head_is_hidden()
 
         for item in draw_list:
             if item[1] == 'apple':
                 self.draw_apple(self.draw_cache, time_float)
             elif item[1] == 'body_strip':
-                _, _, body_segments = item
-                self._draw_body_strip(self.draw_cache, body_segments)
+                _, _, seg = item
+                # Neck cap draws a head-colored blob at the same screen spot
+                # as the head sprite — must be suppressed together with it,
+                # or a bare (eyeless) cap still reads as a visible head.
+                self._draw_body_strip(self.draw_cache, seg,
+                                       draw_head_cap=not head_hidden, draw_tail_cap=False)
             elif item[1] == 'snake':
                 _, _, idx, q, r = item
                 self.draw_snake_segment(self.draw_cache, idx, q, r, time_float)
@@ -2510,7 +2625,10 @@ class SnakeGame:
                     ey = gsy + int(math.sin(angle) * ray_len)
                     ray_a = 5
                     if ray_a > 0:
-                        pygame.draw.line(self._rays_surf_cache, (*sun_color, ray_a), (gsx, gsy), (ex, ey), 2)
+                        # BLEND_ADD ignores alpha; premultiply so rays stay faint.
+                        a = ray_a / 255.0
+                        ray_c = (int(sun_color[0] * a), int(sun_color[1] * a), int(sun_color[2] * a))
+                        pygame.draw.line(self._rays_surf_cache, ray_c, (gsx, gsy), (ex, ey), 2)
                 surf.blit(self._rays_surf_cache, (0, 0), special_flags=pygame.BLEND_ADD)
         self._perf_timings['post'] = (time.perf_counter() - _t0) * 1000
 
@@ -2543,15 +2661,6 @@ class SnakeGame:
         if self.settings.get('vignette', POST_VIGNETTE_ENABLED):
             surf.blit(self.vignette_surf, (0, 0))
 
-        # Wrap transition world flip: rotate rendered world before UI
-        if self._wrap_transition['active'] and self._wrap_transition['roll_angle'] > 0.01:
-            angle = -math.degrees(self._wrap_transition['roll_angle'])
-            self._flip_cache = pygame.transform.rotate(surf, angle)
-            ox = (self._flip_cache.get_width() - WIDTH) // 2
-            oy = (self._flip_cache.get_height() - HEIGHT) // 2
-            surf.fill((0, 0, 0))
-            surf.blit(self._flip_cache, (-ox, -oy))
-
         _t0 = time.perf_counter()
         if self.state == GameState.START:
             draw_title_screen(surf, self, self.menu_selection, self.render_time)
@@ -2574,9 +2683,8 @@ class SnakeGame:
 
         # Fade overlay for transitions
         if self.fade_alpha > 0:
-            fade_surf = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-            fade_surf.fill((0, 0, 0, int(self.fade_alpha)))
-            surf.blit(fade_surf, (0, 0))
+            self._fade_surf.fill((0, 0, 0, int(self.fade_alpha)))
+            surf.blit(self._fade_surf, (0, 0))
 
         self.grade_overlay.fill((0, 0, 0, 0))
         if self.grade_warm_flash > 0:
@@ -2604,6 +2712,7 @@ class SnakeGame:
         needs_full = (self._full_redraw_requested or
                       not self._tile_cache_valid or
                       self.eat_flash > 0 or
+                      self._wrap_transition['active'] or
                       self.state in (GameState.PAUSED, GameState.GAME_OVER,
                                      GameState.START, GameState.SETTINGS) or
                        self.render_time == 0.0)
@@ -2627,13 +2736,14 @@ class SnakeGame:
 
     def _compute_frame_stats(self):
         if len(self._frame_times) < 2:
-            self._frame_stats = {'avg': 0.0, 'min': 0.0, 'max': 0.0, 'p95': 0.0, 'p99': 0.0}
+            self._frame_stats = {'avg': 0.0, 'min': 0.0, 'max': 0.0, 'p50': 0.0, 'p95': 0.0, 'p99': 0.0}
             return
         times = sorted(self._frame_times)
         n = len(times)
         self._frame_stats['avg'] = sum(times) / n
         self._frame_stats['min'] = times[0]
         self._frame_stats['max'] = times[-1]
+        self._frame_stats['p50'] = times[int(n * 0.50)]
         self._frame_stats['p95'] = times[int(n * 0.95)]
         self._frame_stats['p99'] = times[int(n * 0.99)]
 
@@ -2648,7 +2758,14 @@ class SnakeGame:
 
         while self.state != GameState.QUIT:
             _frame_start = time.perf_counter()
-            raw_dt = self.clock.tick(RENDER_FPS) / 1000.0
+            # Exactly one pacing authority: if display vsync engaged, the
+            # swap already paces the loop, so just measure elapsed time
+            # (Clock.tick() with no argument doesn't sleep/cap). Otherwise
+            # fall back to the software cap.
+            if self._vsync_active:
+                raw_dt = self.clock.tick() / 1000.0
+            else:
+                raw_dt = self.clock.tick(RENDER_FPS) / 1000.0
             raw_dt = min(raw_dt, MAX_FRAME_DT)
 
             _t_events_start = time.perf_counter()
@@ -2658,6 +2775,8 @@ class SnakeGame:
             _t_sim_start = time.perf_counter()
             if self.state == GameState.PLAYING:
                 sim_accumulator += raw_dt
+                if sim_accumulator > FIXED_DT * MAX_SIM_STEPS:
+                    self._catch_up_overruns += 1
                 sim_accumulator = min(sim_accumulator, FIXED_DT * MAX_SIM_STEPS)
                 while sim_accumulator >= FIXED_DT:
                     self.update(FIXED_DT)
@@ -2702,8 +2821,6 @@ class SnakeGame:
 
             self._perf_timings['frame'] = (time.perf_counter() - _frame_start) * 1000
             self._frame_times.append(self._perf_timings['frame'])
-            if len(self._frame_times) > FRAME_TIME_WINDOW:
-                self._frame_times = self._frame_times[-FRAME_TIME_WINDOW:]
             self._frame_count += 1
             self._wall_time = time.perf_counter()
             self._compute_frame_stats()
@@ -2714,9 +2831,6 @@ class SnakeGame:
             else:
                 instant_fps = 1000.0 / max(frame_ms, 0.001)
                 self._smooth_fps += (instant_fps - self._smooth_fps) * FPS_SMOOTH_ALPHA
-
-            if sim_accumulator > FIXED_DT * MAX_SIM_STEPS and self.state == GameState.PLAYING:
-                self._catch_up_overruns += 1
 
         pygame.quit()
         sys.exit()

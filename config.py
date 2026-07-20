@@ -195,7 +195,11 @@ AUDIO_FADE_TIME = 0.5
 
 # Phase 03 — Spline motion
 SEGMENT_SPACING = 0.35
-MAX_PATH_LENGTH = 60
+# Must exceed the max possible snake length (the full 15x15=225-cell board)
+# plus the one-entry lookahead _next_head_unwrapped() adds, or the deque
+# silently drops tail history and the body spline's index correspondence
+# desyncs from self.snake.
+MAX_PATH_LENGTH = (2 * GRID_RADIUS + 1) ** 2 + 1
 
 # Phase 04 — Snake body continuity
 SNAKE_SEGMENT_SCALE = 1.15  # Body segment diameter relative to HEX_SIZE (~2/3 tile across)
@@ -252,6 +256,7 @@ WRAP_TRANSITION_DURATION = 0.55
 WRAP_DIVE_FRAC = 0.35      # fraction of duration for dive phase
 WRAP_ROLL_FRAC = 0.30      # fraction of duration for roll phase
 WRAP_DIVE_DEPTH = 12.0     # max head z-depth during dive
+WRAP_HEAD_HIDE_WINDOW = 0.35  # radians around roll_angle==pi/2 where the head sprite is hidden
 
 # Phase 13 — Persistence
 PERSISTENCE_DIR = None  # None = auto-detect via platformdirs / ~/.snakev2/

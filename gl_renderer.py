@@ -3,7 +3,7 @@ import struct
 import pygame
 from config import *
 from shaders import *
-from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color, in_bounds, rgb_to_hsv, hsv_to_rgb
+from utils import hex_to_pixel, hex_corners, tile_noise, compute_tile_ao, lerp_color, all_hexes, hex_side_normal, compute_sun_light, compute_sky_color, in_bounds, rgb_to_hsv, hsv_to_rgb, nearest_period_offset
 from game_state import GameState
 
 try:
@@ -134,19 +134,23 @@ class GLRenderer:
             return False
         try:
             snake_set = set(game.snake)
+            eye_x, eye_y = game.camera.eye[0], game.camera.eye[1]
             tile_depths = []
             for q, r in all_hexes():
                 cx, cy = hex_to_pixel(q, r)
-                sx, sy, depth = game.camera.project(cx, cy, 0)
+                off_x, off_y = nearest_period_offset(cx, cy, eye_x, eye_y)
+                sx, sy, depth = game.camera.project(cx + off_x, cy + off_y, 0)
                 if sx < -TILE_CLIP_MARGIN or sx > WIDTH + TILE_CLIP_MARGIN:
                     continue
                 if sy < -TILE_CLIP_MARGIN or sy > HEIGHT + TILE_CLIP_MARGIN:
                     continue
-                tile_depths.append((depth, q, r))
+                tile_depths.append((depth, q, r, off_x, off_y))
             tile_depths.sort(key=lambda x: x[0], reverse=True)
             all_verts = []
-            for tile_depth, q, r in tile_depths:
+            for tile_depth, q, r, off_x, off_y in tile_depths:
                 cx, cy = hex_to_pixel(q, r)
+                cx += off_x
+                cy += off_y
                 corners = hex_corners(cx, cy)
                 top_pts = [game.camera.project(c_x, c_y, 0)[:2] for c_x, c_y in corners]
                 bot_pts = [game.camera.project(c_x, c_y, -TILE_HEIGHT)[:2] for c_x, c_y in corners]
